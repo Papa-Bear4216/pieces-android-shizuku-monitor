@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.log
+
+# Android build output — keep the project, not the build
+apps/mobile/android/app/build/
+apps/mobile/android/build/
+apps/mobile/android/.gradle/
+apps/mobile/android/local.properties
+*.apk
+*.aab
+
+# never commit a real bearer token
+.env
+.env.local
+.bearer-token

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Plan A is LAN-only by design: the proxy has no TLS story because it's a
+  home-network peer, not a public origin. Android's network-security-config
+  <domain> element only matches literal hostnames, not CIDR ranges — it
+  cannot express "any private IP" — so this allows cleartext app-wide rather
+  than pretending to scope it to a range it can't actually enforce.
+  This is an accepted tradeoff for a LAN-only companion app talking to a
+  proxy the user explicitly enters the address of at Setup; do not reuse
+  this manifest as a template for anything that also talks to the public
+  internet over HTTP.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

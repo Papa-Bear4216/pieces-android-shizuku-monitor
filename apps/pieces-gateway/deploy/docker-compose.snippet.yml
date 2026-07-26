@@ -1,0 +1,20 @@
+# Reference copy of the pieces-gateway service block added to
+# /home/micha/hermes-bridge/docker-compose.yml on hermes-host. Kept here so
+# the change is visible in this repo's history too, even though the live
+# file lives on the VM, not in this repo.
+#
+# The live docker-compose.yml also gained "pieces-gateway" in caddy's
+# depends_on list.
+
+  pieces-gateway:
+    build:
+      context: ../pieces-android
+      dockerfile: apps/pieces-gateway/Dockerfile
+    restart: unless-stopped
+    env_file: ../pieces-android/apps/pieces-gateway/.env
+    volumes:
+      - pieces_gateway_data:/data
+    expose: ["8788"]
+
+# Also add to the top-level volumes: block:
+#   pieces_gateway_data:

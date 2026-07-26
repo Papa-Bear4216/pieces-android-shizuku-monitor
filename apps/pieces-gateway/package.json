@@ -1,0 +1,22 @@
+{
+  "name": "@pieces-android/pieces-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts",
+    "enroll": "tsx src/enroll-cli.ts",
+    "revoke": "tsx src/revoke-cli.ts",
+    "list-devices": "tsx src/list-devices-cli.ts"
+  },
+  "dependencies": {
+    "@pieces-android/allowlist": "file:../../packages/allowlist",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0",
+    "@types/jsonwebtoken": "^9.0.7"
+  }
+}
