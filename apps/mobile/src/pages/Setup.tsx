@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { getProxyBaseUrl, getProxyToken, setProxyBaseUrl, setProxyToken } from "../lib/config";
 import { checkProxyHealth } from "../lib/api";
+import { recordEvent, classifyMode } from "../lib/usage";
+import { flushUsageEvents } from "../lib/flush";
 
 export default function Setup() {
   const navigate = useNavigate();
@@ -16,6 +18,8 @@ export default function Setup() {
       if (savedUrl) setBaseUrl(savedUrl);
       if (savedToken) setToken(savedToken);
     })();
+    recordEvent({ type: "screen_view", screen: "setup", timestamp: new Date().toISOString() });
+    flushUsageEvents();
   }, []);
 
   async function handleTestAndSave() {
@@ -30,6 +34,13 @@ export default function Setup() {
     setResult("ok");
     await setProxyBaseUrl(baseUrl);
     await setProxyToken(token);
+    await recordEvent({
+      type: "setup_saved",
+      screen: "setup",
+      mode: classifyMode(baseUrl),
+      timestamp: new Date().toISOString(),
+    });
+    flushUsageEvents();
   }
 
   return (

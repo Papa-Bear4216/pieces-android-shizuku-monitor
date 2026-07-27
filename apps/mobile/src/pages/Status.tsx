@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getStatus, ProxyNotConfiguredError, HomeNodeUnreachableError } from "../lib/api";
+import { recordEvent } from "../lib/usage";
+import { flushUsageEvents } from "../lib/flush";
 
 type State =
   | { kind: "loading" }
@@ -31,6 +33,8 @@ export default function Status() {
 
   useEffect(() => {
     load();
+    recordEvent({ type: "screen_view", screen: "status", timestamp: new Date().toISOString() });
+    flushUsageEvents();
   }, []);
 
   return (

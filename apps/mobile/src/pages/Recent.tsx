@@ -9,6 +9,8 @@ import {
   type ConversationSummary,
   type AssetSummary,
 } from "../lib/api";
+import { recordEvent } from "../lib/usage";
+import { flushUsageEvents } from "../lib/flush";
 
 type State =
   | { kind: "loading" }
@@ -41,6 +43,8 @@ export default function Recent() {
 
   useEffect(() => {
     load();
+    recordEvent({ type: "screen_view", screen: "recent", timestamp: new Date().toISOString() });
+    flushUsageEvents();
   }, []);
 
   async function handleSearch() {
@@ -49,9 +53,19 @@ export default function Recent() {
       return;
     }
     try {
-      setSearchResults(await searchAssets(query));
+      const results = await searchAssets(query);
+      setSearchResults(results);
+      recordEvent({
+        type: "search",
+        screen: "recent",
+        query,
+        resultCount: results.length,
+        timestamp: new Date().toISOString(),
+      });
     } catch (err) {
       setSearchResults([]);
+    } finally {
+      flushUsageEvents();
     }
   }
 

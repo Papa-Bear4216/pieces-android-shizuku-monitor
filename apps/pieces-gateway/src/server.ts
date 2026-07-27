@@ -27,15 +27,38 @@ if (!HOME_PROXY_TOKEN) {
   process.exit(1);
 }
 
+// Capacitor's WebView makes requests from its own origin (typically
+// https://localhost), not the gateway's own origin - without this header,
+// the WebView's fetch() rejects immediately once it sees the response has no
+// CORS allowance, even though the network request itself succeeded. This is
+// why "could not reach proxy" showed instantly despite curl/browser working
+// fine from the same network: curl and a plain browser tab don't enforce
+// CORS, but a WebView's fetch() does.
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
 function sendJson(res: import("node:http").ServerResponse, status: number, body: unknown) {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) });
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(payload),
+    ...CORS_HEADERS,
+  });
   res.end(payload);
 }
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
   const method = req.method ?? "GET";
+
+  if (method === "OPTIONS") {
+    res.writeHead(204, CORS_HEADERS);
+    res.end();
+    return;
+  }
 
   // Unauthenticated liveness check for the gateway process itself - does NOT
   // prove the home node is reachable, just that this service is up. The
@@ -52,11 +75,15 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // Ask needs the same special-casing as Plan A's proxy (typed
-  // unavailable-vs-answered), so it forwards to the home proxy's own
-  // /mobile/ask rather than being routed through the generic allowlist below.
+  // Ask and usage-report both need their raw POST body forwarded rather than
+  // being routed through the generic allowlist below - neither maps to a
+  // PiecesOS path (packages/allowlist only knows mobile-path -> PiecesOS-path
+  // mappings), and both terminate at the home proxy itself. usage-report
+  // forwards rather than logging locally so Plan A and Plan B events land in
+  // the same file on the PC instead of splitting across two logs.
   const isAsk = method === "POST" && url.pathname === "/mobile/ask";
-  const route = isAsk ? { piecesPath: "" } : findAllowedRoute(method, url.pathname);
+  const isUsageReport = method === "POST" && url.pathname === "/mobile/usage-report";
+  const route = isAsk || isUsageReport ? { piecesPath: "" } : findAllowedRoute(method, url.pathname);
 
   if (!route) {
     // Deny-by-default: same allowlist module as Plan A. Anything not listed
@@ -72,7 +99,7 @@ const server = createServer(async (req, res) => {
       headers: { Authorization: `Bearer ${HOME_PROXY_TOKEN}` },
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     };
-    if (isAsk) {
+    if (isAsk || isUsageReport) {
       let body = "";
       for await (const chunk of req) body += chunk;
       upstreamReq.body = body;
@@ -81,7 +108,10 @@ const server = createServer(async (req, res) => {
 
     const homeRes = await fetch(target, upstreamReq);
     const text = await homeRes.text();
-    res.writeHead(homeRes.status, { "Content-Type": homeRes.headers.get("content-type") ?? "application/json" });
+    res.writeHead(homeRes.status, {
+      "Content-Type": homeRes.headers.get("content-type") ?? "application/json",
+      ...CORS_HEADERS,
+    });
     res.end(text);
   } catch (err) {
     // Fail closed: if the tailnet path to the home PC is down (PC asleep,

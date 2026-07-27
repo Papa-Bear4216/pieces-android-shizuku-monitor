@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ask, ProxyNotConfiguredError, HomeNodeUnreachableError, type AskResult } from "../lib/api";
+import { recordEvent } from "../lib/usage";
+import { flushUsageEvents } from "../lib/flush";
 
 type State =
   | { kind: "idle" }
@@ -15,20 +17,36 @@ export default function Ask() {
   const [query, setQuery] = useState("");
   const [state, setState] = useState<State>({ kind: "idle" });
 
+  useEffect(() => {
+    recordEvent({ type: "screen_view", screen: "ask", timestamp: new Date().toISOString() });
+    flushUsageEvents();
+  }, []);
+
   async function handleAsk() {
     if (!query.trim()) return;
     setState({ kind: "loading" });
     try {
       const result = await ask(query);
       setState({ kind: "result", result });
+      recordEvent({
+        type: "ask",
+        screen: "ask",
+        query,
+        result: result.status,
+        timestamp: new Date().toISOString(),
+      });
     } catch (err) {
       if (err instanceof ProxyNotConfiguredError) {
         setState({ kind: "not-configured" });
       } else if (err instanceof HomeNodeUnreachableError) {
         setState({ kind: "home-offline", message: err.message });
+        recordEvent({ type: "ask", screen: "ask", query, result: "error", timestamp: new Date().toISOString() });
       } else {
         setState({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+        recordEvent({ type: "ask", screen: "ask", query, result: "error", timestamp: new Date().toISOString() });
       }
+    } finally {
+      flushUsageEvents();
     }
   }
 
