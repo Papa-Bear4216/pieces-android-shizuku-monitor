@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { registerPlugin } from "@capacitor/core";
 
 const ShizukuMonitor = registerPlugin<any>('ShizukuMonitor');
+const AccessibilityScanner = registerPlugin<any>('AccessibilityScanner');
 import Setup from "./pages/Setup";
 import Status from "./pages/Status";
 import Ask from "./pages/Ask";
@@ -59,7 +60,18 @@ export default function App() {
             try {
               const res = await ShizukuMonitor.executeCommand({ command: cmd });
               console.log(`[${cmd}]\n` + res.output);
-              alert("Executed! Check JS console for output.");
+              
+              // NEW: Save to queue and flush instantly for testing
+              const { recordEvent } = await import("./lib/usage");
+              await recordEvent({
+                type: "system_telemetry",
+                screen: "background",
+                telemetry: `Command: ${cmd}\n\n${res.output}`,
+                timestamp: new Date().toISOString(),
+              });
+              await flushUsageEvents();
+              
+              alert("Executed & Synced to Pieces OS!");
             } catch(e: any) {
               alert("Error: " + (e.message || String(e)));
             }
@@ -67,6 +79,34 @@ export default function App() {
           style={{ padding: '8px 16px', background: 'green', color: 'white', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
         >
           Execute Command
+        </button>
+        
+        <button 
+          onClick={async () => {
+            try {
+              const res = await AccessibilityScanner.getActiveScreenText();
+              console.log(`[Accessibility] Captured Package: ${res.package}\nText Nodes:\n${res.textNodes}`);
+              
+              if (res.status === "success") {
+                const { recordEvent } = await import("./lib/usage");
+                await recordEvent({
+                  type: "system_telemetry",
+                  screen: "background",
+                  telemetry: `Package: ${res.package}\n\n${res.textNodes}`,
+                  timestamp: new Date().toISOString(),
+                });
+                await flushUsageEvents();
+                alert(`Captured & Synced ${res.textNodes.length} characters from ${res.package}.`);
+              } else {
+                alert(res.status);
+              }
+            } catch(e: any) {
+              alert("Accessibility Error: " + (e.message || String(e)));
+            }
+          }} 
+          style={{ padding: '8px 16px', background: '#9c27b0', color: 'white', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 'bold', marginTop: 8 }}
+        >
+          Scan Screen Text
         </button>
       </div>
     </>
