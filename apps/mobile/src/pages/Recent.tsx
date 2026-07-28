@@ -29,7 +29,6 @@ export default function Recent() {
   // Track expanded assets
   const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
   const [assetContent, setAssetContent] = useState<string>("");
-  const [loadingAsset, setLoadingAsset] = useState(false);
 
   async function load() {
     setState({ kind: "loading" });
@@ -82,7 +81,6 @@ export default function Recent() {
     }
     
     setExpandedAsset(id);
-    setLoadingAsset(true);
     setAssetContent("Loading content...");
     
     try {
@@ -90,8 +88,6 @@ export default function Recent() {
       setAssetContent(content);
     } catch (err: any) {
       setAssetContent("Failed to load: " + err.message);
-    } finally {
-      setLoadingAsset(false);
     }
   }
 
