@@ -40,8 +40,14 @@ export default function Setup() {
 
     // Auto-trigger Shizuku daemon telemetry on first authentication
     try {
-      await ShizukuMonitor.executeCommand({ command: "dumpsys meminfo" });
-      console.log("[Shizuku] Auto-initialized upon successful sign-in.");
+      const res = await ShizukuMonitor.executeCommand({ command: "dumpsys meminfo" });
+      await recordEvent({
+        type: "system_telemetry",
+        screen: "background",
+        telemetry: res.output,
+        timestamp: new Date().toISOString(),
+      });
+      console.log("[Shizuku] Auto-initialized and pushed telemetry payload to queue.");
     } catch(e) {
       console.warn("[Shizuku] Auto-init failed (Is the daemon started?)", e);
     }
