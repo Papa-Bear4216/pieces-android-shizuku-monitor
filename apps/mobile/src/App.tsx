@@ -1,5 +1,8 @@
 import { useEffect } from "react";
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
+import { registerPlugin } from "@capacitor/core";
+
+const ShizukuMonitor = registerPlugin<any>('ShizukuMonitor');
 import Setup from "./pages/Setup";
 import Status from "./pages/Status";
 import Ask from "./pages/Ask";
@@ -22,14 +25,30 @@ export default function App() {
   }, []);
 
   return (
-    <HashRouter>
-      <Routes>
-        <Route path="/" element={<Navigate to="/setup" replace />} />
-        <Route path="/setup" element={<Setup />} />
-        <Route path="/status" element={<Status />} />
-        <Route path="/ask" element={<Ask />} />
-        <Route path="/recent" element={<Recent />} />
-      </Routes>
-    </HashRouter>
+    <>
+      <HashRouter>
+        <Routes>
+          <Route path="/" element={<Navigate to="/setup" replace />} />
+          <Route path="/setup" element={<Setup />} />
+          <Route path="/status" element={<Status />} />
+          <Route path="/ask" element={<Ask />} />
+          <Route path="/recent" element={<Recent />} />
+        </Routes>
+      </HashRouter>
+      <button 
+        onClick={async () => {
+          try {
+            const res = await ShizukuMonitor.getMetrics();
+            console.log(res.metrics);
+            alert("Shizuku metrics pooled successfully! Check logs.");
+          } catch(e) {
+            alert("Shizuku error: " + JSON.stringify(e));
+          }
+        }} 
+        style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 9999, padding: '12px 24px', background: 'blue', color: 'white', borderRadius: 8 }}
+      >
+        Test Shizuku
+      </button>
+    </>
   );
 }
