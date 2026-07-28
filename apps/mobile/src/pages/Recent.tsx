@@ -170,7 +170,7 @@ export default function Recent() {
           <section>
             <h2>Assets</h2>
             <ul>
-              {state.assets.slice(0, 20).map((a) => (
+              {state.assets.slice(0, 100).map((a) => (
                 <li key={a.id} style={{ marginBottom: 12, border: "1px solid #ccc", padding: 8, borderRadius: 4 }}>
                   <div onClick={() => handleExpandAsset(a.id)} style={{ cursor: "pointer" }}>
                     <strong>{a.name}</strong> — {a.updated}
