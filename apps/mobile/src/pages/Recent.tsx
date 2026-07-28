@@ -4,6 +4,7 @@ import {
   getRecentConversations,
   getRecentAssets,
   searchAssets,
+  getAsset,
   ProxyNotConfiguredError,
   HomeNodeUnreachableError,
   type ConversationSummary,
@@ -24,6 +25,11 @@ export default function Recent() {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<AssetSummary[] | null>(null);
+  
+  // Track expanded assets
+  const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
+  const [assetContent, setAssetContent] = useState<string>("");
+  const [loadingAsset, setLoadingAsset] = useState(false);
 
   async function load() {
     setState({ kind: "loading" });
@@ -66,6 +72,26 @@ export default function Recent() {
       setSearchResults([]);
     } finally {
       flushUsageEvents();
+    }
+  }
+
+  async function handleExpandAsset(id: string) {
+    if (expandedAsset === id) {
+      setExpandedAsset(null); // Collapse
+      return;
+    }
+    
+    setExpandedAsset(id);
+    setLoadingAsset(true);
+    setAssetContent("Loading content...");
+    
+    try {
+      const content = await getAsset(id);
+      setAssetContent(content);
+    } catch (err: any) {
+      setAssetContent("Failed to load: " + err.message);
+    } finally {
+      setLoadingAsset(false);
     }
   }
 
@@ -116,8 +142,16 @@ export default function Recent() {
           {searchResults.length === 0 && <p>No matches.</p>}
           <ul>
             {searchResults.map((a) => (
-              <li key={a.id}>
-                <strong>{a.name}</strong> — {a.updated}
+              <li key={a.id} style={{ marginBottom: 12, border: "1px solid #ccc", padding: 8, borderRadius: 4 }}>
+                <div onClick={() => handleExpandAsset(a.id)} style={{ cursor: "pointer" }}>
+                  <strong>{a.name}</strong> — {a.updated}
+                  <span style={{ float: "right" }}>{expandedAsset === a.id ? "▲" : "▼"}</span>
+                </div>
+                {expandedAsset === a.id && (
+                  <pre style={{ marginTop: 8, padding: 8, background: "#f4f4f4", color: "black", whiteSpace: "pre-wrap", overflowX: "auto" }}>
+                    {assetContent}
+                  </pre>
+                )}
               </li>
             ))}
           </ul>
@@ -141,8 +175,16 @@ export default function Recent() {
             <h2>Assets</h2>
             <ul>
               {state.assets.slice(0, 20).map((a) => (
-                <li key={a.id}>
-                  <strong>{a.name}</strong> — {a.updated}
+                <li key={a.id} style={{ marginBottom: 12, border: "1px solid #ccc", padding: 8, borderRadius: 4 }}>
+                  <div onClick={() => handleExpandAsset(a.id)} style={{ cursor: "pointer" }}>
+                    <strong>{a.name}</strong> — {a.updated}
+                    <span style={{ float: "right" }}>{expandedAsset === a.id ? "▲" : "▼"}</span>
+                  </div>
+                  {expandedAsset === a.id && (
+                    <pre style={{ marginTop: 8, padding: 8, background: "#f4f4f4", color: "black", whiteSpace: "pre-wrap", overflowX: "auto" }}>
+                      {assetContent}
+                    </pre>
+                  )}
                 </li>
               ))}
             </ul>

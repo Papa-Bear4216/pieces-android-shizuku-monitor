@@ -117,6 +117,19 @@ export async function searchAssets(query: string): Promise<AssetSummary[]> {
   }));
 }
 
+export async function getAsset(id: string): Promise<string> {
+  const res = await authedFetch(`/mobile/asset/${id}`);
+  if (!res.ok) throw new Error(`Asset fetch failed: HTTP ${res.status}`);
+  const body = await res.json();
+  
+  // Try to extract the raw string from the format (Pieces OS schema)
+  try {
+    return body.original.reference.fragment.string.raw;
+  } catch (err) {
+    return JSON.stringify(body, null, 2);
+  }
+}
+
 export async function ask(query: string): Promise<AskResult> {
   const res = await authedFetch("/mobile/ask", {
     method: "POST",
