@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { PiecesClient } from "@pieces-android/pieces-api";
 import { findAllowedRoute } from "@pieces-android/allowlist";
 import { isValidBearerToken } from "./auth.js";
+import { summarizeTelemetry, seedToPiecesOS, TelemetryEvent } from "./seeder.js";
 
 const UPSTREAM_TIMEOUT_MS = 5000;
 
@@ -115,9 +116,32 @@ const server = createServer(async (req, res) => {
     }
     try {
       await mkdir(dirname(USAGE_LOG_PATH), { recursive: true });
-      const lines = events.map((e) => JSON.stringify(e)).join("\n") + "\n";
+      const lines = (events as any[]).map((e) => JSON.stringify(e)).join("\n") + "\n";
       await appendFile(USAGE_LOG_PATH, lines, "utf-8");
-      sendJson(res, 200, { accepted: events.length });
+      
+      // Attempt to seed telemetry directly into Pieces OS desktop
+      for (const e of (events as TelemetryEvent[])) {
+        if (e.type === "system_telemetry") {
+          const bodyText = summarizeTelemetry(e);
+          const title = `Android Context: System Telemetry`;
+          
+          let seeded = false;
+          for (const base of ["http://127.0.0.1:1000", "http://127.0.0.1:5323", PIECES_BASE_URL]) {
+            try {
+              await seedToPiecesOS(base, bodyText, title);
+              seeded = true;
+              break;
+            } catch (err) {
+              // continue trying other ports
+            }
+          }
+          if (!seeded) {
+            console.warn("Pieces OS not reachable for seeding; telemetry logged to disk only.");
+          }
+        }
+      }
+
+      sendJson(res, 200, { accepted: (events as any[]).length });
     } catch (err) {
       sendJson(res, 500, { error: "failed to persist usage events", detail: err instanceof Error ? err.message : String(err) });
     }
