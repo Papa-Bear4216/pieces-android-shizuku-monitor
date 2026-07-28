@@ -130,6 +130,32 @@ export async function getAsset(id: string): Promise<string> {
   }
 }
 
+export interface ConversationMessage {
+  id: string;
+  role: string;
+  text: string;
+  timestamp: string;
+}
+
+export async function getConversationMessages(id: string): Promise<ConversationMessage[]> {
+  const res = await authedFetch(`/mobile/conversation/${id}/messages`);
+  if (!res.ok) throw new Error(`Conversation messages failed: HTTP ${res.status}`);
+  const body = await res.json();
+  const iterable = Array.isArray(body?.iterable) ? body.iterable : [];
+  return iterable.map((m: any) => {
+    let text = "";
+    if (m.fragment?.string?.raw) {
+      text = m.fragment.string.raw;
+    }
+    return {
+      id: m.id,
+      role: m.role ?? "UNKNOWN",
+      text,
+      timestamp: m.created?.readable ?? m.created?.value ?? "",
+    };
+  });
+}
+
 export async function ask(query: string): Promise<AskResult> {
   const res = await authedFetch("/mobile/ask", {
     method: "POST",

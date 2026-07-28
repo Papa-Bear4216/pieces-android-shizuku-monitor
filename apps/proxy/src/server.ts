@@ -174,6 +174,32 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Specialized route for fetching a conversation's messages
+  if (method === "GET" && url.pathname.startsWith("/mobile/conversation/") && url.pathname.endsWith("/messages")) {
+    const convoId = url.pathname.split("/")[3];
+    if (!convoId) {
+      sendJson(res, 400, { error: "missing conversation ID" });
+      return;
+    }
+    try {
+      const target = new URL(`/conversation/${convoId}/messages`, PIECES_BASE_URL);
+      const piecesRes = await fetch(target, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
+      const text = await piecesRes.text();
+      res.writeHead(piecesRes.status, {
+        "Content-Type": piecesRes.headers.get("content-type") ?? "application/json",
+        ...CORS_HEADERS,
+      });
+      res.end(text);
+    } catch (err) {
+      const isTimeout = err instanceof Error && err.name === "TimeoutError";
+      sendJson(res, isTimeout ? 503 : 502, {
+        error: isTimeout ? "PiecesOS timed out" : "PiecesOS unreachable",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
   const route = findAllowedRoute(method, url.pathname);
   if (!route) {
     // Deny-by-default: anything not explicitly listed in allowlist.ts is a 404,

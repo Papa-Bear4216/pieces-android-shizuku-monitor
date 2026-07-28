@@ -5,10 +5,12 @@ import {
   getRecentAssets,
   searchAssets,
   getAsset,
+  getConversationMessages,
   ProxyNotConfiguredError,
   HomeNodeUnreachableError,
   type ConversationSummary,
   type AssetSummary,
+  type ConversationMessage,
 } from "../lib/api";
 import { recordEvent } from "../lib/usage";
 import { flushUsageEvents } from "../lib/flush";
@@ -29,6 +31,11 @@ export default function Recent() {
   // Track expanded assets
   const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
   const [assetContent, setAssetContent] = useState<string>("");
+
+  // Track expanded conversations
+  const [expandedConversation, setExpandedConversation] = useState<string | null>(null);
+  const [conversationMessages, setConversationMessages] = useState<ConversationMessage[] | null>(null);
+  const [conversationLoadingError, setConversationLoadingError] = useState<string>("");
 
   async function load() {
     setState({ kind: "loading" });
@@ -88,6 +95,24 @@ export default function Recent() {
       setAssetContent(content);
     } catch (err: any) {
       setAssetContent("Failed to load: " + err.message);
+    }
+  }
+
+  async function handleExpandConversation(id: string) {
+    if (expandedConversation === id) {
+      setExpandedConversation(null); // Collapse
+      return;
+    }
+    
+    setExpandedConversation(id);
+    setConversationMessages(null);
+    setConversationLoadingError("");
+    
+    try {
+      const messages = await getConversationMessages(id);
+      setConversationMessages(messages);
+    } catch (err: any) {
+      setConversationLoadingError("Failed to load: " + err.message);
     }
   }
 
@@ -160,8 +185,27 @@ export default function Recent() {
             <h2>Conversations</h2>
             <ul>
               {state.conversations.slice(0, 20).map((c) => (
-                <li key={c.id}>
-                  <strong>{c.name}</strong> — {c.updated}
+                <li key={c.id} style={{ marginBottom: 12, border: "1px solid #ccc", padding: 8, borderRadius: 4 }}>
+                  <div onClick={() => handleExpandConversation(c.id)} style={{ cursor: "pointer" }}>
+                    <strong>{c.name}</strong> — {c.updated}
+                    <span style={{ float: "right" }}>{expandedConversation === c.id ? "▲" : "▼"}</span>
+                  </div>
+                  {expandedConversation === c.id && (
+                    <div style={{ marginTop: 8, padding: 8, background: "#f4f4f4", color: "black", borderRadius: 4 }}>
+                      {conversationLoadingError && <p style={{color: "red"}}>{conversationLoadingError}</p>}
+                      {!conversationMessages && !conversationLoadingError && <p>Loading timeline...</p>}
+                      {conversationMessages && conversationMessages.length === 0 && <p>No messages in this conversation.</p>}
+                      {conversationMessages && conversationMessages.map((msg) => (
+                        <div key={msg.id} style={{ marginBottom: 12, borderBottom: "1px solid #ddd", paddingBottom: 8 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                            <strong>{msg.role}</strong>
+                            <small style={{ color: "#666" }}>{msg.timestamp}</small>
+                          </div>
+                          <div style={{ whiteSpace: "pre-wrap" }}>{msg.text || <i>(No text content)</i>}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

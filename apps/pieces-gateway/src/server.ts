@@ -84,7 +84,8 @@ const server = createServer(async (req, res) => {
   const isAsk = method === "POST" && url.pathname === "/mobile/ask";
   const isUsageReport = method === "POST" && url.pathname === "/mobile/usage-report";
   const isAssetFetch = method === "GET" && url.pathname.startsWith("/mobile/asset/");
-  const route = isAsk || isUsageReport || isAssetFetch ? { piecesPath: "" } : findAllowedRoute(method, url.pathname);
+  const isConversationFetch = method === "GET" && url.pathname.startsWith("/mobile/conversation/") && url.pathname.endsWith("/messages");
+  const route = isAsk || isUsageReport || isAssetFetch || isConversationFetch ? { piecesPath: "" } : findAllowedRoute(method, url.pathname);
 
   if (!route) {
     // Deny-by-default: same allowlist module as Plan A. Anything not listed
