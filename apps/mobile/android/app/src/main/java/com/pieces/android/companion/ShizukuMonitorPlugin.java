@@ -54,4 +54,43 @@ public class ShizukuMonitorPlugin extends Plugin {
             }
         });
     }
+
+    @PluginMethod
+    public void executeCommand(PluginCall call) {
+        String command = call.getString("command");
+        if (command == null || command.isEmpty()) {
+            call.reject("Must provide a command string");
+            return;
+        }
+
+        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            Shizuku.requestPermission(0);
+            call.reject("Shizuku permission requested. Please approve in the Shizuku app.");
+            return;
+        }
+
+        if (!Shizuku.pingBinder()) {
+            call.reject("Shizuku is not active. Start the Shizuku app daemon.");
+            return;
+        }
+
+        executor.execute(() -> {
+            try {
+                ShizukuRemoteProcess process = Shizuku.newProcess(new String[]{"sh", "-c", command}, null, null);
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                
+                StringBuilder output = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                
+                JSObject ret = new JSObject();
+                ret.put("output", output.toString());
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject("Privileged execution failed: " + e.getMessage());
+            }
+        });
+    }
 }
