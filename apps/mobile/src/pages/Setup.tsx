@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { registerPlugin } from "@capacitor/core";
+
+const ShizukuMonitor = registerPlugin<any>('ShizukuMonitor');
 import { getProxyBaseUrl, getProxyToken, setProxyBaseUrl, setProxyToken } from "../lib/config";
 import { checkProxyHealth } from "../lib/api";
 import { recordEvent, classifyMode } from "../lib/usage";
@@ -34,6 +37,15 @@ export default function Setup() {
     setResult("ok");
     await setProxyBaseUrl(baseUrl);
     await setProxyToken(token);
+
+    // Auto-trigger Shizuku daemon telemetry on first authentication
+    try {
+      await ShizukuMonitor.executeCommand({ command: "dumpsys meminfo" });
+      console.log("[Shizuku] Auto-initialized upon successful sign-in.");
+    } catch(e) {
+      console.warn("[Shizuku] Auto-init failed (Is the daemon started?)", e);
+    }
+
     await recordEvent({
       type: "setup_saved",
       screen: "setup",
