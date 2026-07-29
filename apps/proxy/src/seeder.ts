@@ -54,13 +54,15 @@ export async function seedToPiecesOS(piecesBaseUrl: string, bodyText: string, ti
   });
   
   if (!appRes.ok) throw new Error("Failed to connect to Pieces OS");
-  const application = await appRes.json();
+  const context = await appRes.json();
+  const application = context.application;
 
   // 2) Create an asset
   const createRes = await fetch(`${piecesBaseUrl}/assets/create`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      type: "SEEDED_ASSET",
       asset: {
         application,
         metadata: { name: title },

@@ -5,6 +5,23 @@ import { PiecesClient } from "@pieces-android/pieces-api";
 import { findAllowedRoute } from "@pieces-android/allowlist";
 import { isValidBearerToken } from "./auth.js";
 import { summarizeTelemetry, seedToPiecesOS, TelemetryEvent } from "./seeder.js";
+import { MemoryClient } from "mem0ai";
+
+// Mem0 integration is optional — most PiecesOS users won't have an account.
+// Unset MEM0_API_KEY entirely disables it; failures are always non-fatal
+// (logged and swallowed) so a bad/expired key never breaks the proxy itself.
+const MEM0_API_KEY = process.env.MEM0_API_KEY;
+const MEM0_USER_ID = process.env.MEM0_USER_ID ?? "pieces-android-user";
+const mem0Client = MEM0_API_KEY ? new MemoryClient({ apiKey: MEM0_API_KEY }) : null;
+
+async function addToMem0(content: string) {
+  if (!mem0Client) return;
+  try {
+    await mem0Client.add([{ role: "user", content }], { user_id: MEM0_USER_ID });
+  } catch (e) {
+    console.warn("Failed to save to Mem0", e);
+  }
+}
 
 const UPSTREAM_TIMEOUT_MS = 5000;
 
@@ -88,6 +105,9 @@ const server = createServer(async (req, res) => {
       sendJson(res, 400, { error: "query is required" });
       return;
     }
+    
+    await addToMem0(query);
+
     const result = await pieces.ask(query);
     sendJson(res, 200, result);
     return;
@@ -119,24 +139,18 @@ const server = createServer(async (req, res) => {
       const lines = (events as any[]).map((e) => JSON.stringify(e)).join("\n") + "\n";
       await appendFile(USAGE_LOG_PATH, lines, "utf-8");
       
-      // Attempt to seed telemetry directly into Pieces OS desktop
+      // Attempt to seed telemetry directly into Pieces OS desktop & Mem0
       for (const e of (events as TelemetryEvent[])) {
         if (e.type === "system_telemetry") {
           const bodyText = summarizeTelemetry(e);
           const title = `Android Context: System Telemetry`;
           
-          let seeded = false;
-          for (const base of ["http://127.0.0.1:1000", "http://127.0.0.1:5323", PIECES_BASE_URL]) {
-            try {
-              await seedToPiecesOS(base, bodyText, title);
-              seeded = true;
-              break;
-            } catch (err) {
-              // continue trying other ports
-            }
-          }
-          if (!seeded) {
-            console.warn("Pieces OS not reachable for seeding; telemetry logged to disk only.");
+          await addToMem0(bodyText);
+
+          try {
+            await seedToPiecesOS(PIECES_BASE_URL, bodyText, title);
+          } catch (err) {
+            console.warn("PiecesOS not reachable for seeding; telemetry logged to disk only.", err);
           }
         }
       }
