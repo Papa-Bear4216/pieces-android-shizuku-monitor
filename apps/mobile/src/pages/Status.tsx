@@ -117,6 +117,10 @@ export default function Status() {
     const next = new Set(allowlist);
     if (next.has(packageName)) next.delete(packageName);
     else next.add(packageName);
+    await applyAllowlist(next);
+  }
+
+  async function applyAllowlist(next: Set<string>) {
     setAllowlistState(next);
     await AccessibilityScanner.setAllowlist({ packages: Array.from(next) });
 
@@ -124,6 +128,17 @@ export default function Status() {
       setPassiveMode(false);
       await AccessibilityScanner.setPassiveModeEnabled({ enabled: false });
     }
+  }
+
+  async function selectAllApps() {
+    // apps is already pre-filtered by the Java side (banking/password-manager
+    // packages excluded from the list entirely), so "all" here still respects
+    // that boundary — it's a bulk-edit convenience, not a wider grant.
+    await applyAllowlist(new Set(apps.map(a => a.packageName)));
+  }
+
+  async function deselectAllApps() {
+    await applyAllowlist(new Set());
   }
 
   async function runPreset(cmd: string) {
@@ -243,6 +258,20 @@ export default function Status() {
 
               {showPicker && (
                 <div style={{ marginTop: 8, maxHeight: 300, overflowY: 'auto', background: '#111', borderRadius: 8, padding: 8 }}>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                    <button
+                      onClick={selectAllApps}
+                      style={{ padding: '4px 10px', fontSize: 12, background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                    >
+                      Select all
+                    </button>
+                    <button
+                      onClick={deselectAllApps}
+                      style={{ padding: '4px 10px', fontSize: 12, background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                    >
+                      Deselect all
+                    </button>
+                  </div>
                   {apps.map(app => (
                     <label key={app.packageName} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13, color: 'white' }}>
                       <input
