@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <application
         android:allowBackup="true"
@@ -60,4 +61,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+    <!-- Needed for AccessibilityScanner.listInstalledApps() (the app picker for
+         screen-capture allowlisting) to see the full installed-app list on
+         Android 11+, which restricts package visibility by default. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
 </manifest>
