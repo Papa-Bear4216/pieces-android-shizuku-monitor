@@ -3,7 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { registerPlugin } from "@capacitor/core";
 
 const ShizukuMonitor = registerPlugin<any>('ShizukuMonitor');
-import { getProxyBaseUrl, getProxyToken, setProxyBaseUrl, setProxyToken } from "../lib/config";
+import {
+  getProxyBaseUrl, getProxyToken, setProxyBaseUrl, setProxyToken,
+  isShizukuToolkitEnabled, setShizukuToolkitEnabled,
+} from "../lib/config";
 import { checkProxyHealth } from "../lib/api";
 import { recordEvent, classifyMode } from "../lib/usage";
 import { flushUsageEvents } from "../lib/flush";
@@ -14,16 +17,35 @@ export default function Setup() {
   const [token, setToken] = useState("");
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<"idle" | "ok" | "unreachable">("idle");
+  const [shizukuToolkit, setShizukuToolkit] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const [savedUrl, savedToken] = await Promise.all([getProxyBaseUrl(), getProxyToken()]);
+      const [savedUrl, savedToken, toolkitEnabled] = await Promise.all([
+        getProxyBaseUrl(), getProxyToken(), isShizukuToolkitEnabled(),
+      ]);
       if (savedUrl) setBaseUrl(savedUrl);
       if (savedToken) setToken(savedToken);
+      setShizukuToolkit(toolkitEnabled);
     })();
     recordEvent({ type: "screen_view", screen: "setup", timestamp: new Date().toISOString() });
     flushUsageEvents();
   }, []);
+
+  async function handleToggleShizuku(next: boolean) {
+    setShizukuToolkit(next);
+    await setShizukuToolkitEnabled(next);
+    if (next) {
+      // First-enable: try to turn on the accessibility service right away
+      // rather than waiting for the next app launch. Best-effort — if
+      // Shizuku isn't granted yet, the Status tab will surface that.
+      try {
+        await ShizukuMonitor.enableAccessibilityService();
+      } catch (e) {
+        console.warn("[Shizuku] enableAccessibilityService failed (grant Shizuku permission first)", e);
+      }
+    }
+  }
 
   async function handleTestAndSave() {
     setChecking(true);
@@ -38,18 +60,18 @@ export default function Setup() {
     await setProxyBaseUrl(baseUrl);
     await setProxyToken(token);
 
-    // Auto-trigger Shizuku daemon telemetry on first authentication
-    try {
-      const res = await ShizukuMonitor.executeCommand({ command: "dumpsys meminfo" });
-      await recordEvent({
-        type: "system_telemetry",
-        screen: "background",
-        telemetry: res.output,
-        timestamp: new Date().toISOString(),
-      });
-      console.log("[Shizuku] Auto-initialized and pushed telemetry payload to queue.");
-    } catch(e) {
-      console.warn("[Shizuku] Auto-init failed (Is the daemon started?)", e);
+    if (shizukuToolkit) {
+      try {
+        const res = await ShizukuMonitor.executeCommand({ command: "dumpsys meminfo" });
+        await recordEvent({
+          type: "system_telemetry",
+          screen: "background",
+          telemetry: res.output,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e) {
+        console.warn("[Shizuku] Auto-init failed (Is the daemon started?)", e);
+      }
     }
 
     await recordEvent({
@@ -72,16 +94,16 @@ export default function Setup() {
         the bearer token generated on that PC.
       </p>
       <p className="hint">
-        <strong>Away from home:</strong> https://pieces.dysfunctionjunction.xyz and a device token from
-        the gateway's enroll command. This path fails closed — if the home PC is offline or unreachable,
-        requests return an explicit error rather than hanging.
+        <strong>Away from home:</strong> your gateway's public URL (e.g. https://pieces.yourdomain.com)
+        and a device token from the gateway's enroll command. This path fails closed — if the home PC
+        is offline or unreachable, requests return an explicit error rather than hanging.
       </p>
 
       <label>
         Server address
         <input
           type="text"
-          placeholder="http://192.168.1.20:8787 or https://pieces.dysfunctionjunction.xyz"
+          placeholder="http://192.168.1.20:8787 or https://pieces.yourdomain.com"
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
         />
@@ -98,6 +120,25 @@ export default function Setup() {
 
       {result === "ok" && <p className="status-ok">Connected. Saved.</p>}
       {result === "unreachable" && <p className="status-error">Could not reach proxy at that address.</p>}
+
+      <div style={{ marginTop: 24, padding: 12, border: "1px solid #444", borderRadius: 8 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={shizukuToolkit}
+            onChange={(e) => handleToggleShizuku(e.target.checked)}
+          />
+          <strong>Enable Shizuku toolkit (advanced)</strong>
+        </label>
+        <p className="hint" style={{ marginTop: 8 }}>
+          Off by default. Turning this on lets the app run privileged diagnostic commands
+          via Shizuku, and — if you separately grant Accessibility in Android Settings and
+          pick apps in the Status tab's app picker — capture on-screen text from those
+          specific apps only, to give PiecesOS more context. Requires the Shizuku app
+          installed and its daemon running. Nothing here happens unless you turn this on
+          first.
+        </p>
+      </div>
 
       <nav className="tabbar">
         <button onClick={() => navigate("/status")}>Status</button>

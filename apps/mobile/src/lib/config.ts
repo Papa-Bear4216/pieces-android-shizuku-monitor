@@ -12,6 +12,7 @@ import { Preferences } from "@capacitor/preferences";
 
 const PROXY_BASE_URL_KEY = "pieces-android:proxyBaseUrl";
 const PROXY_TOKEN_KEY = "pieces-android:proxyToken";
+const SHIZUKU_ENABLED_KEY = "pieces-android:shizukuToolkitEnabled";
 
 export async function getProxyBaseUrl(): Promise<string | null> {
   const { value } = await Preferences.get({ key: PROXY_BASE_URL_KEY });
@@ -38,4 +39,17 @@ export async function isConfigured(): Promise<boolean> {
 
 export async function clearConfig(): Promise<void> {
   await Promise.all([Preferences.remove({ key: PROXY_BASE_URL_KEY }), Preferences.remove({ key: PROXY_TOKEN_KEY })]);
+}
+
+// Off by default. The Shizuku toolkit (privileged shell diagnostics + the
+// system-wide accessibility screen-text capture) is powerful enough that it
+// must be an explicit, informed opt-in — never auto-enabled just because the
+// Shizuku app happens to be installed and granted.
+export async function isShizukuToolkitEnabled(): Promise<boolean> {
+  const { value } = await Preferences.get({ key: SHIZUKU_ENABLED_KEY });
+  return value === "true";
+}
+
+export async function setShizukuToolkitEnabled(enabled: boolean): Promise<void> {
+  await Preferences.set({ key: SHIZUKU_ENABLED_KEY, value: String(enabled) });
 }
