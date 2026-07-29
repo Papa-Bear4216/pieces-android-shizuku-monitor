@@ -34,6 +34,24 @@ requested, until you flip the toggle in the Setup screen. When you do:
 If you don't want any of this, ignore it — Status/Recent/Ask work fully without Shizuku or
 Accessibility ever being touched.
 
+### Passive mode (advanced, requires a second explicit confirmation)
+
+By default, screen-text capture only happens when you tap "Scan Screen Text" — a single
+on-demand snapshot. There's a separate, further-gated **passive mode** that instead pushes
+captured text automatically, continuously, while an allowed app is in the foreground:
+
+- Debounced: waits ~2 seconds after the screen stops changing before considering a push, so
+  it doesn't fire on every keystroke/scroll.
+- Deduped: skips the push if the text is identical to the last thing actually sent.
+- Still scoped to the same per-app allowlist as manual capture — nothing outside apps you've
+  explicitly selected.
+
+Because this is meaningfully more invasive than a button press — it runs in the background,
+repeatedly, without asking each time — enabling it requires typing a confirmation phrase in
+the Status tab, on top of the toolkit opt-in and having at least one app allowlisted. It can
+be turned off at any time from the same screen, and clearing the allowlist to zero apps
+turns it off automatically.
+
 ```
 apps/proxy/          Node HTTP proxy (Plan A) — bearer auth + deny-by-default allowlist in front of PiecesOS
 apps/pieces-gateway/ Node HTTP gateway (Plan B) — JWT device auth + revoke, forwards to apps/proxy over Tailscale

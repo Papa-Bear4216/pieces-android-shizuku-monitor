@@ -22,6 +22,21 @@ public class AccessibilityPlugin extends Plugin {
 
     static final String PREFS_NAME = "pieces_accessibility_prefs";
     static final String ALLOWLIST_KEY = "captured_package_allowlist";
+    static final String PASSIVE_MODE_KEY = "passive_mode_enabled";
+
+    @Override
+    public void load() {
+        super.load();
+        // Bridges the accessibility service's debounced captures to JS via a
+        // Capacitor event. Registered once per plugin instance; the service
+        // only calls this if passive mode is on (checked on its side too).
+        PiecesAccessibilityService.passiveListener = (packageName, text) -> {
+            JSObject data = new JSObject();
+            data.put("package", packageName);
+            data.put("textNodes", text);
+            notifyListeners("passiveCapture", data);
+        };
+    }
 
     // Excluded from the app picker outright — never selectable, regardless of what the
     // user picks. Matched by package-name prefix, not exact string, since these vendors
@@ -110,6 +125,33 @@ public class AccessibilityPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("status", "saved");
         ret.put("count", allowlist.size());
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void getPassiveModeEnabled(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("enabled", getPrefs().getBoolean(PASSIVE_MODE_KEY, false));
+        call.resolve(ret);
+    }
+
+    // Passive mode has its own gate on top of the toolkit opt-in and the app
+    // allowlist — enabling it means captured text is pushed automatically
+    // (debounced/deduped in PiecesAccessibilityService) instead of only on a
+    // button tap. The React layer requires a typed confirmation before
+    // calling this, but this method itself has no additional precondition
+    // beyond that call — the allowlist emptiness check is enforced in React
+    // since an empty allowlist just means passive mode has nothing to send.
+    @PluginMethod
+    public void setPassiveModeEnabled(PluginCall call) {
+        Boolean enabled = call.getBoolean("enabled");
+        if (enabled == null) {
+            call.reject("Must provide enabled boolean");
+            return;
+        }
+        getPrefs().edit().putBoolean(PASSIVE_MODE_KEY, enabled).apply();
+        JSObject ret = new JSObject();
+        ret.put("status", "saved");
         call.resolve(ret);
     }
 

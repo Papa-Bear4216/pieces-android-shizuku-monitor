@@ -25,6 +25,8 @@ type State =
 
 type AppEntry = { packageName: string; label: string };
 
+const PASSIVE_MODE_CONFIRM_PHRASE = "I understand";
+
 export default function Status() {
   const navigate = useNavigate();
   const [state, setState] = useState<State>({ kind: "loading" });
@@ -32,6 +34,10 @@ export default function Status() {
   const [apps, setApps] = useState<AppEntry[]>([]);
   const [allowlist, setAllowlistState] = useState<Set<string>>(new Set());
   const [showPicker, setShowPicker] = useState(false);
+  const [passiveMode, setPassiveMode] = useState(false);
+  const [passiveConfirmText, setPassiveConfirmText] = useState("");
+  const [showPassiveConfirm, setShowPassiveConfirm] = useState(false);
+  const [lastPassiveCapture, setLastPassiveCapture] = useState<{ pkg: string; at: string } | null>(null);
 
   async function load() {
     setState({ kind: "loading" });
@@ -52,9 +58,46 @@ export default function Status() {
   useEffect(() => {
     load();
     isShizukuToolkitEnabled().then(setToolkitEnabled);
+    AccessibilityScanner.getPassiveModeEnabled().then((r: any) => setPassiveMode(r.enabled));
     recordEvent({ type: "screen_view", screen: "status", timestamp: new Date().toISOString() });
     flushUsageEvents();
+
+    // Passive captures arrive here already debounced/deduped on the Java
+    // side (PiecesAccessibilityService) — this just forwards each one into
+    // the same usage-event pipeline as a manual "Scan Screen Text" tap.
+    const listenerHandle = AccessibilityScanner.addListener("passiveCapture", async (data: { package: string; textNodes: string }) => {
+      const timestamp = new Date().toISOString();
+      await recordEvent({
+        type: "system_telemetry",
+        screen: "background",
+        telemetry: `Package: ${data.package}\n\n${data.textNodes}`,
+        timestamp,
+      });
+      await flushUsageEvents();
+      setLastPassiveCapture({ pkg: data.package, at: timestamp });
+    });
+
+    return () => { listenerHandle.remove(); };
   }, []);
+
+  async function handleTogglePassiveMode(next: boolean) {
+    if (!next) {
+      setPassiveMode(false);
+      setShowPassiveConfirm(false);
+      setPassiveConfirmText("");
+      await AccessibilityScanner.setPassiveModeEnabled({ enabled: false });
+      return;
+    }
+    setShowPassiveConfirm(true);
+  }
+
+  async function confirmPassiveMode() {
+    if (passiveConfirmText.trim() !== PASSIVE_MODE_CONFIRM_PHRASE) return;
+    setPassiveMode(true);
+    setShowPassiveConfirm(false);
+    setPassiveConfirmText("");
+    await AccessibilityScanner.setPassiveModeEnabled({ enabled: true });
+  }
 
   async function openPicker() {
     try {
@@ -76,6 +119,11 @@ export default function Status() {
     else next.add(packageName);
     setAllowlistState(next);
     await AccessibilityScanner.setAllowlist({ packages: Array.from(next) });
+
+    if (next.size === 0 && passiveMode) {
+      setPassiveMode(false);
+      await AccessibilityScanner.setPassiveModeEnabled({ enabled: false });
+    }
   }
 
   async function runPreset(cmd: string) {
@@ -213,6 +261,63 @@ export default function Status() {
                   </button>
                 </div>
               )}
+
+              <hr style={{ border: 0, borderTop: '1px solid #555', margin: '8px 0' }} />
+
+              <div style={{ border: '1px solid #a33', borderRadius: 6, padding: 10 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: allowlist.size === 0 ? 'not-allowed' : 'pointer', opacity: allowlist.size === 0 ? 0.5 : 1 }}>
+                  <input
+                    type="checkbox"
+                    checked={passiveMode}
+                    disabled={allowlist.size === 0}
+                    onChange={(e) => handleTogglePassiveMode(e.target.checked)}
+                  />
+                  <strong style={{ color: '#f88' }}>Passive mode (advanced)</strong>
+                </label>
+                <p style={{ color: '#ccc', fontSize: 12, marginTop: 6 }}>
+                  Instead of only capturing when you tap "Scan Screen Text," automatically
+                  push screen text from allowed apps to PiecesOS whenever it changes and
+                  settles for ~2 seconds. This runs continuously in the background while an
+                  allowed app is open — not a single snapshot. Requires at least one app
+                  selected above.
+                </p>
+
+                {showPassiveConfirm && (
+                  <div style={{ marginTop: 8, padding: 8, background: '#1a0000', borderRadius: 4 }}>
+                    <p style={{ color: '#faa', fontSize: 12 }}>
+                      This will continuously send text from {allowlist.size} allowed app{allowlist.size === 1 ? '' : 's'} to
+                      PiecesOS in the background, without asking each time. Type "{PASSIVE_MODE_CONFIRM_PHRASE}" to confirm.
+                    </p>
+                    <input
+                      value={passiveConfirmText}
+                      onChange={(e) => setPassiveConfirmText(e.target.value)}
+                      placeholder={PASSIVE_MODE_CONFIRM_PHRASE}
+                      style={{ padding: 6, borderRadius: 4, border: 'none', width: '100%', boxSizing: 'border-box' }}
+                    />
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                      <button
+                        onClick={confirmPassiveMode}
+                        disabled={passiveConfirmText.trim() !== PASSIVE_MODE_CONFIRM_PHRASE}
+                        style={{ padding: '6px 12px', background: passiveConfirmText.trim() === PASSIVE_MODE_CONFIRM_PHRASE ? '#a33' : '#666', color: 'white', border: 'none', borderRadius: 4, cursor: passiveConfirmText.trim() === PASSIVE_MODE_CONFIRM_PHRASE ? 'pointer' : 'not-allowed' }}
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        onClick={() => { setShowPassiveConfirm(false); setPassiveConfirmText(""); }}
+                        style={{ padding: '6px 12px', background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {passiveMode && lastPassiveCapture && (
+                  <p style={{ color: '#8f8', fontSize: 11, marginTop: 6 }}>
+                    Last passive capture: {lastPassiveCapture.pkg} at {new Date(lastPassiveCapture.at).toLocaleTimeString()}
+                  </p>
+                )}
+              </div>
             </div>
           )}
         </>

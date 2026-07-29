@@ -2,6 +2,8 @@ package com.pieces.android.companion;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import java.util.ArrayList;
@@ -14,6 +16,25 @@ public class PiecesAccessibilityService extends AccessibilityService {
     // A static buffer to hold the most recently extracted text blocks across the OS
     public static List<String> lastCapturedText = new ArrayList<>();
     public static String lastCapturedPackage = "";
+
+    // Debounce settle time for passive mode: wait this long after the last
+    // accessibility event before treating the screen as "settled" and
+    // considering a push. Avoids firing on every keystroke/scroll.
+    private static final long DEBOUNCE_MS = 2000;
+
+    private final Handler debounceHandler = new Handler(Looper.getMainLooper());
+    private Runnable pendingPush;
+    private String lastPushedText = "";
+    private String lastPushedPackage = "";
+
+    // Set by AccessibilityPlugin when the JS layer wants passive-mode pushes
+    // delivered as they're debounced, instead of only on-demand via
+    // getActiveScreenText(). Null when nobody's listening (e.g. plugin not
+    // yet initialized) — pushes are simply skipped, buffer still updates.
+    public interface PassiveCaptureListener {
+        void onCapture(String packageName, String text);
+    }
+    public static volatile PassiveCaptureListener passiveListener;
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
@@ -30,10 +51,33 @@ public class PiecesAccessibilityService extends AccessibilityService {
             rootNode.recycle();
         }
 
-        if (!extractedTexts.isEmpty()) {
-            lastCapturedPackage = packageName;
-            lastCapturedText = extractedTexts;
+        if (extractedTexts.isEmpty()) return;
+
+        lastCapturedPackage = packageName;
+        lastCapturedText = extractedTexts;
+
+        if (isPassiveModeEnabled()) {
+            scheduleDebouncedPush(packageName, String.join("\n", extractedTexts));
         }
+    }
+
+    private void scheduleDebouncedPush(String packageName, String text) {
+        if (pendingPush != null) debounceHandler.removeCallbacks(pendingPush);
+        pendingPush = () -> {
+            // Dedupe: skip if identical to the last thing we actually pushed,
+            // so a static/unchanging screen doesn't repeat-fire every DEBOUNCE_MS.
+            if (text.equals(lastPushedText) && packageName.equals(lastPushedPackage)) return;
+            lastPushedText = text;
+            lastPushedPackage = packageName;
+            PassiveCaptureListener listener = passiveListener;
+            if (listener != null) listener.onCapture(packageName, text);
+        };
+        debounceHandler.postDelayed(pendingPush, DEBOUNCE_MS);
+    }
+
+    private boolean isPassiveModeEnabled() {
+        SharedPreferences prefs = getSharedPreferences(AccessibilityPlugin.PREFS_NAME, MODE_PRIVATE);
+        return prefs.getBoolean(AccessibilityPlugin.PASSIVE_MODE_KEY, false);
     }
 
     // Only capture from packages the user explicitly selected via the app picker
