@@ -5,6 +5,7 @@ import { PiecesClient } from "@pieces-android/pieces-api";
 import { findAllowedRoute } from "@pieces-android/allowlist";
 import { isValidBearerToken } from "./auth.js";
 import { summarizeTelemetry, seedToPiecesOS, TelemetryEvent } from "./seeder.js";
+import { SeedQueue } from "./seed-queue.js";
 import { MemoryClient } from "mem0ai";
 
 // Mem0 integration is optional — most PiecesOS users won't have an account.
@@ -34,6 +35,15 @@ const MAX_EVENTS_PER_BATCH = 500;
 const PORT = Number(process.env.PROXY_PORT ?? 8787);
 const PIECES_BASE_URL = process.env.PIECES_BASE_URL ?? "http://127.0.0.1:39300";
 const BEARER_TOKEN = process.env.PROXY_BEARER_TOKEN;
+
+// Anything that fails to seed into PiecesOS (e.g. it's restarting) lands
+// here instead of being silently dropped — a background loop retries it
+// until it succeeds or MAX_ATTEMPTS is hit. USAGE_LOG_PATH still gets every
+// event unconditionally regardless of seed outcome, so this queue is purely
+// about reconciling into PiecesOS, not about not losing the data at all.
+const SEED_QUEUE_PATH =
+  process.env.SEED_QUEUE_PATH ?? `${process.env.USERPROFILE ?? process.env.HOME}\\.claude\\pieces-seed-queue.jsonl`;
+const seedQueue = new SeedQueue(SEED_QUEUE_PATH, PIECES_BASE_URL);
 
 if (!BEARER_TOKEN) {
   console.error(
@@ -150,7 +160,8 @@ const server = createServer(async (req, res) => {
           try {
             await seedToPiecesOS(PIECES_BASE_URL, bodyText, title);
           } catch (err) {
-            console.warn("PiecesOS not reachable for seeding; telemetry logged to disk only.", err);
+            console.warn("PiecesOS not reachable for seeding; queued for retry.", err);
+            await seedQueue.enqueue(bodyText, title);
           }
         }
       }
@@ -247,3 +258,8 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`pieces-android proxy listening on 0.0.0.0:${PORT} (LAN, private-profile firewall assumed)`);
   console.log(`proxying to PiecesOS at ${PIECES_BASE_URL}`);
 });
+
+// Also drain once on startup — covers the case where the proxy itself was
+// down (not just PiecesOS) and items piled up while nothing was retrying.
+seedQueue.drain().catch((err) => console.warn("[seed-queue] initial drain failed", err));
+seedQueue.startRetryLoop();

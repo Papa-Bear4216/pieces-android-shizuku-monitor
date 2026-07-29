@@ -34,6 +34,22 @@ requested, until you flip the toggle in the Setup screen. When you do:
 If you don't want any of this, ignore it — Status/Recent/Ask work fully without Shizuku or
 Accessibility ever being touched.
 
+## No data lost if the connection drops
+
+Every telemetry event survives a broken link, at both hops:
+
+- **Phone → proxy**: events queue in Capacitor Preferences (`apps/mobile/src/lib/usage.ts`)
+  and only clear on a confirmed successful send. Any failure — offline, proxy down, home PC
+  unreachable — leaves them queued for the next retry (on every screen navigation, plus a
+  5-minute backstop timer).
+- **Proxy → PiecesOS**: every event is written to a permanent, unconditional audit log
+  (`USAGE_LOG_PATH`) the moment it's received, regardless of what happens next. If seeding
+  it into PiecesOS fails (e.g. PiecesOS is restarting), it also goes into a separate durable
+  retry queue (`SEED_QUEUE_PATH`, default `~/.claude/pieces-seed-queue.jsonl`) that a
+  background loop drains every 30 seconds — on both a timer and proxy startup — until it
+  succeeds or hits 50 attempts (~25 minutes), at which point it's dropped from the retry
+  queue but remains in the permanent audit log either way.
+
 ### Passive mode (advanced, requires a second explicit confirmation)
 
 By default, screen-text capture only happens when you tap "Scan Screen Text" — a single
