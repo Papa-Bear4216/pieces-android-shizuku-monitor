@@ -195,15 +195,35 @@ export default function Recent() {
                       {conversationLoadingError && <p style={{color: "red"}}>{conversationLoadingError}</p>}
                       {!conversationMessages && !conversationLoadingError && <p>Loading timeline...</p>}
                       {conversationMessages && conversationMessages.length === 0 && <p>No messages in this conversation.</p>}
-                      {conversationMessages && conversationMessages.map((msg) => (
-                        <div key={msg.id} style={{ marginBottom: 12, borderBottom: "1px solid #ddd", paddingBottom: 8 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                            <strong>{msg.role}</strong>
-                            <small style={{ color: "#666" }}>{msg.timestamp}</small>
+                      {conversationMessages && conversationMessages.map((msg) => {
+                        const isUser = msg.role.toLowerCase() === "user";
+                        return (
+                          <div key={msg.id} style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: isUser ? "flex-end" : "flex-start",
+                            marginBottom: 12
+                          }}>
+                            <div style={{
+                              maxWidth: "85%",
+                              padding: "10px 14px",
+                              borderRadius: "18px",
+                              backgroundColor: isUser ? "#007AFF" : "#E5E5EA",
+                              color: isUser ? "#FFF" : "#000",
+                              borderBottomRightRadius: isUser ? "4px" : "18px",
+                              borderBottomLeftRadius: isUser ? "18px" : "4px",
+                              boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
+                            }}>
+                              <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                {msg.text || <i style={{ opacity: 0.7 }}>(No text content)</i>}
+                              </div>
+                            </div>
+                            <small style={{ color: "#8e8e93", marginTop: 4, fontSize: "0.75rem", padding: "0 4px" }}>
+                              {msg.timestamp}
+                            </small>
                           </div>
-                          <div style={{ whiteSpace: "pre-wrap" }}>{msg.text || <i>(No text content)</i>}</div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </li>

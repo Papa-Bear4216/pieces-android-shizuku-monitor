@@ -1,12 +1,38 @@
 # pieces-android
 
-Android companion for PiecesOS — Status, Recent, and Ask (Ask is currently degraded, see
-[docs/ALLOWED_ROUTES.md](docs/ALLOWED_ROUTES.md)). Two ways to connect, both live:
+Android companion for PiecesOS — Status, Recent, Ask, and an optional privileged toolkit
+(Shizuku shell diagnostics + accessibility-based screen-text capture). Two ways to connect
+the core app, both live:
 
 - **Plan A (LAN)**: phone and PC on the same Wi-Fi, talking directly to a proxy on the PC.
-- **Plan B (remote)**: phone anywhere with internet, routed through a gateway on hermes-host
-  over Tailscale back to the same PC — no inbound ports opened on the home network, fails
-  closed if the PC is offline/unreachable.
+- **Plan B (remote)**: phone anywhere with internet, routed through a gateway on a host you
+  control over Tailscale back to the same PC — no inbound ports opened on the home network,
+  fails closed if the PC is offline/unreachable.
+
+## Optional: Shizuku toolkit (advanced, off by default)
+
+The app can optionally use [Shizuku](https://shizuku.rikka.app/) — a separate app you install
+yourself that grants ADB-level shell access without root — to run a small set of diagnostic
+commands (`dumpsys battery`, `pm list packages -3`, etc.) and, if you also grant Android's
+Accessibility permission, capture on-screen text **only from apps you explicitly select** in
+an in-app picker. Both are sent to your own PiecesOS instance as context.
+
+**This is off until you turn it on.** Nothing in this toolkit runs, and no permission is
+requested, until you flip the toggle in the Setup screen. When you do:
+
+- Shell commands are restricted to a fixed allowlist enforced in the Android app's Java code
+  (`ShizukuMonitorPlugin.ALLOWED_COMMANDS`), not just the UI — the WebView cannot run
+  arbitrary shell even if compromised.
+- Screen-text capture only reads from packages you've added to the allowlist via the app
+  picker (Status tab → "Choose allowed apps"). Known password-manager and banking app
+  packages are excluded from that picker outright and cannot be selected.
+- This still requires two separate manual grants on your end: installing Shizuku and
+  starting its daemon (wireless debugging or root), and enabling Android's Accessibility
+  service for this app in system Settings (or letting the app do it via Shizuku once you've
+  opted in).
+
+If you don't want any of this, ignore it — Status/Recent/Ask work fully without Shizuku or
+Accessibility ever being touched.
 
 ```
 apps/proxy/          Node HTTP proxy (Plan A) — bearer auth + deny-by-default allowlist in front of PiecesOS
@@ -142,13 +168,20 @@ first to confirm reachability, then saves both values via Capacitor's native Pre
 storage. Once saved, **Status**, **Ask**, and **Recent** all use the saved address + token
 automatically — switch between Plan A and Plan B any time by just changing Setup.
 
+## Optional: Mem0 integration
+
+If you set `MEM0_API_KEY` in the proxy's environment, Ask queries and captured telemetry
+are also mirrored to your [Mem0](https://mem0.ai) account (`MEM0_USER_ID`, default
+`pieces-android-user`). Entirely optional — leave both unset and this is skipped silently,
+no error, no dependency on having a Mem0 account.
+
 ## Known limitations
 
-- **Ask** currently returns "unavailable" for every query — PiecesOS's answer-generation
-  endpoints (`/qgpt/relevance` with a search scope, `/qgpt/question`) return HTTP 500 on
-  this install, most likely because no LLM model is configured. This is a PiecesOS-side
-  gap, not a bug in the proxy or app — see `docs/ALLOWED_ROUTES.md` for the exact evidence
-  and re-test once resolved. Status and Recent are fully functional today.
+- **Ask requires a model configured in PiecesOS.** If PiecesOS's answer-generation endpoints
+  (`/qgpt/relevance` with a search scope, `/qgpt/question`) return HTTP 500, the app shows
+  in-app guidance pointing at PiecesOS's Settings → Models/Copilot screen — this is a
+  PiecesOS-side setup step, not a bug in the proxy or app. See `docs/ALLOWED_ROUTES.md` for
+  the underlying evidence. Status and Recent don't depend on a model and work regardless.
 - **Plan A proxy uptime** depends on staying logged into Windows — it's registered to run
   at boot and logon (no stored password, by design), but has not yet been proven to
   survive a fully unattended reboot with nobody signing back in. See `docs/ACCEPTANCE.md`

@@ -12,11 +12,16 @@
   },
   "dependencies": {
     "@pieces-android/allowlist": "file:../../packages/allowlist",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
-    "tsx": "^4.19.0",
+    "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.0.0",
-    "@types/jsonwebtoken": "^9.0.7"
-  }
+    "tsx": "^4.19.0"
+  },
+  "description": "",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }

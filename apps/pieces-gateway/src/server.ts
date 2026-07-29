@@ -3,13 +3,13 @@ import { findAllowedRoute } from "@pieces-android/allowlist";
 import { verifyToken } from "./jwt.js";
 
 const PORT = Number(process.env.GATEWAY_PORT ?? 8788);
-// Home PC's Tailscale IP, not its LAN IP - this gateway runs on hermes-host,
+// Home PC's Tailscale IP, not its LAN IP - this gateway runs on a remote host
 // off the home network entirely, and only the tailnet bridges the two.
 const HOME_PROXY_BASE_URL = process.env.HOME_PROXY_BASE_URL;
 // The Plan A proxy's own bearer token - this is a SECOND auth layer, distinct
 // from the JWT below. Phone -> gateway is JWT; gateway -> home proxy is still
 // the original Plan A bearer token. Never commit this value; it lives in the
-// hermes-host compose env only.
+// remote host's compose env only.
 const HOME_PROXY_TOKEN = process.env.HOME_PROXY_TOKEN;
 const JWT_SECRET = process.env.GATEWAY_JWT_SECRET;
 const UPSTREAM_TIMEOUT_MS = 5000;
@@ -102,10 +102,11 @@ const server = createServer(async (req, res) => {
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     };
     if (isAsk || isUsageReport) {
-      let body = "";
-      for await (const chunk of req) body += chunk;
-      upstreamReq.body = body;
+      upstreamReq.body = req;
       upstreamReq.headers = { ...upstreamReq.headers, "Content-Type": "application/json" };
+      // Node.js native fetch requires duplex: 'half' when streaming a body.
+      // @ts-expect-error duplex is not properly typed in early TS node fetch definitions
+      upstreamReq.duplex = "half";
     }
 
     const homeRes = await fetch(target, upstreamReq);
