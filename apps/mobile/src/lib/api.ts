@@ -54,7 +54,7 @@ export interface AssetSummary {
 
 export type AskResult =
   | { status: "answered"; answers: unknown }
-  | { status: "unavailable"; reason: string };
+  | { status: "unavailable"; reason: string; likelyNoModelConfigured?: boolean };
 
 /** Unauthenticated liveness check — safe to call before Setup is complete. */
 export async function checkProxyHealth(baseUrl: string): Promise<boolean> {

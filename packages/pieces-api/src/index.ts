@@ -33,7 +33,7 @@ export interface AssetSummary {
 
 export type AskResult =
   | { status: "answered"; answers: unknown }
-  | { status: "unavailable"; reason: string };
+  | { status: "unavailable"; reason: string; likelyNoModelConfigured?: boolean };
 
 export class PiecesClient {
   private readonly baseUrl: string;
@@ -130,9 +130,15 @@ export class PiecesClient {
     }
 
     if (!relevanceRes.ok) {
+      // A 500 specifically on this endpoint (as opposed to a network error or
+      // other status) matches the known no-model-configured failure mode
+      // documented in docs/ALLOWED_ROUTES.md — distinct enough from a generic
+      // failure that the UI can point the user at the fix instead of just
+      // saying "something went wrong."
       return {
         status: "unavailable",
-        reason: `PiecesOS Ask endpoint returned HTTP ${relevanceRes.status}. Likely no LLM model configured — check Pieces desktop app settings.`,
+        reason: `PiecesOS Ask endpoint returned HTTP ${relevanceRes.status}.`,
+        likelyNoModelConfigured: relevanceRes.status === 500,
       };
     }
 

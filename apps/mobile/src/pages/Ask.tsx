@@ -82,9 +82,17 @@ export default function Ask() {
       {state.kind === "error" && <p className="status-error">{state.message}</p>}
 
       {state.kind === "result" && state.result.status === "unavailable" && (
-        <p className="status-error">
-          Ask is currently unavailable: {state.result.reason}
-        </p>
+        <div className="status-error">
+          <p>Ask is currently unavailable: {state.result.reason}</p>
+          {state.result.likelyNoModelConfigured && (
+            <p className="hint">
+              This usually means PiecesOS doesn't have an LLM model configured yet. On the
+              PC running PiecesOS: open the Pieces desktop app → Settings → Models/Copilot,
+              and either enable a local model or connect a cloud provider (OpenAI, Anthropic,
+              etc.) with an API key. Once a model is active, retry this question.
+            </p>
+          )}
+        </div>
       )}
 
       {state.kind === "result" && state.result.status === "answered" && (
