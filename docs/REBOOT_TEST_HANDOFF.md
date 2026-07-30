@@ -2,6 +2,44 @@
 
 Context for whoever (Claude or Michael) picks this up after the PC reboots.
 
+## Round 2 findings (2026-07-30, ~05:25 AM, after the first real reboot)
+
+The first reboot test happened (confirmed via `LastBootUpTime`, uptime ~14 min
+at check time). Results:
+
+- **The scheduled task DID fire** — `Get-ScheduledTaskInfo` showed
+  `LastRunTime` ~14s after boot, `LastTaskResult: 0`. Earlier assumption in
+  this doc ("never run") was wrong — it was based on absent evidence (event
+  log was disabled), not confirmed absence.
+- **But the proxy was NOT listening on 8787** after boot. A node process WAS
+  running, but investigation (`Get-CimInstance Win32_Process -Filter
+  "ProcessId = ..."` for the real command line, not the truncated
+  `Get-Process` one) showed it was `openclaw gateway --port 18789` —
+  completely unrelated. The actual proxy process was not present.
+- `service-wrapper.ps1` had **zero output capture** — no way to see why it
+  failed silently at boot. Manually re-running the exact same script
+  interactively worked fine (proxy came up, `{"ok":true}`), so the script
+  itself isn't broken — something about the **boot-time S4U session context**
+  specifically breaks it (S4U runs logged-out, before the user profile is
+  fully loaded — candidates: OneDrive Files-On-Demand hydration timing for
+  the synced repo path, `npx`/node PATH resolution differences in that
+  session type, or a race with network/PiecesOS not being up yet).
+- **Fixed**: rewrote `service-wrapper.ps1` to log everything to
+  `~/.claude/pieces-proxy-service.log` — start marker, full PATH, working
+  dir before/after `Set-Location`, token file existence check, all
+  `npx tsx` stdout/stderr, and an exit-code marker. Verified via a detached
+  `Start-Process` launch (mimics how Task Scheduler invokes it) — worked
+  correctly outside the S4U context, confirming the logging itself is sound
+  and will actually capture the real failure next boot.
+- Committed as `7168bd3`.
+
+**Next step for round 3**: reboot again, then check
+`~/.claude/pieces-proxy-service.log` — it should now show exactly what
+`npx tsx` did or didn't do at boot time. If the log file doesn't even exist
+after reboot, the wrapper script itself never launched (task-definition/
+trigger issue, not a script bug) — check `Get-ScheduledTaskInfo` and the
+Task Scheduler event log again in that case.
+
 ## What we're testing
 
 Whether the `PiecesAndroidProxy` Windows Scheduled Task actually brings the
