@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { getStatus, ProxyNotConfiguredError, HomeNodeUnreachableError } from "../lib/api";
 import { recordEvent } from "../lib/usage";
 import { flushUsageEvents } from "../lib/flush";
-import { isShizukuToolkitEnabled } from "../lib/config";
+import { isShizukuToolkitEnabled, isScreenContextEnabled } from "../lib/config";
 import { registerPlugin } from "@capacitor/core";
 
 const ShizukuMonitor = registerPlugin<any>('ShizukuMonitor');
@@ -31,6 +31,7 @@ export default function Status() {
   const navigate = useNavigate();
   const [state, setState] = useState<State>({ kind: "loading" });
   const [toolkitEnabled, setToolkitEnabled] = useState(false);
+  const [contextEnabled, setContextEnabled] = useState(false);
   const [apps, setApps] = useState<AppEntry[]>([]);
   const [allowlist, setAllowlistState] = useState<Set<string>>(new Set());
   const [showPicker, setShowPicker] = useState(false);
@@ -58,6 +59,7 @@ export default function Status() {
   useEffect(() => {
     load();
     isShizukuToolkitEnabled().then(setToolkitEnabled);
+    isScreenContextEnabled().then(setContextEnabled);
     AccessibilityScanner.getPassiveModeEnabled().then((r: any) => setPassiveMode(r.enabled));
     recordEvent({ type: "screen_view", screen: "status", timestamp: new Date().toISOString() });
     flushUsageEvents();
@@ -215,16 +217,15 @@ export default function Status() {
           </dl>
           <button onClick={load}>Refresh</button>
 
-          {!toolkitEnabled && (
+          {!toolkitEnabled && !contextEnabled && (
             <p className="hint" style={{ marginTop: 20 }}>
-              Shizuku toolkit is off. Enable it in Setup to use privileged diagnostics or
-              screen-text capture.
+              Screen context and the Shizuku toolkit are both off. Enable either in Setup.
             </p>
           )}
 
           {toolkitEnabled && (
             <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 8, background: 'rgba(0,0,0,0.8)', padding: 16, borderRadius: 8 }}>
-              <h4 style={{margin: 0, color: 'white', fontSize: 14}}>Shizuku Toolkit</h4>
+              <h4 style={{margin: 0, color: 'white', fontSize: 14}}>Shizuku Diagnostics</h4>
               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                 {PRESET_COMMANDS.map(c => (
                   <button
@@ -236,9 +237,12 @@ export default function Status() {
                   </button>
                 ))}
               </div>
+            </div>
+          )}
 
-              <hr style={{ border: 0, borderTop: '1px solid #555', margin: '8px 0' }} />
-
+          {contextEnabled && (
+            <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 8, background: 'rgba(0,0,0,0.8)', padding: 16, borderRadius: 8 }}>
+              <h4 style={{margin: 0, color: 'white', fontSize: 14}}>Screen Context</h4>
               <p style={{ color: '#ccc', fontSize: 12, margin: 0 }}>
                 Screen-text capture only reads from apps you've explicitly allowed below.
               </p>

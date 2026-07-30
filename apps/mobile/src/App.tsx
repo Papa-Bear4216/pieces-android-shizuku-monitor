@@ -20,9 +20,13 @@ export default function App() {
   const [shizukuOffline, setShizukuOffline] = useState(false);
 
   useEffect(() => {
-    // Re-enable the accessibility service on launch if Shizuku dropped it
-    // (e.g. after a reboot) — but only for users who already opted in via
-    // Setup. Never runs, never even checks Shizuku, until that toggle is on.
+    // Re-enable the accessibility service via Shizuku on launch if it got
+    // dropped (e.g. after a reboot) — but only for users who opted into the
+    // Shizuku toolkit specifically via Setup. Screen context on its own
+    // (isScreenContextEnabled) doesn't need this at all: without Shizuku,
+    // Accessibility is a normal Android Settings toggle that the user
+    // enables manually once, and it just stays enabled — no re-arming logic
+    // needed since nothing here can silently disable it.
     async function checkShizuku() {
       const enabled = await isShizukuToolkitEnabled();
       if (!enabled) return;

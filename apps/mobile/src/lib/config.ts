@@ -13,6 +13,7 @@ import { Preferences } from "@capacitor/preferences";
 const PROXY_BASE_URL_KEY = "pieces-android:proxyBaseUrl";
 const PROXY_TOKEN_KEY = "pieces-android:proxyToken";
 const SHIZUKU_ENABLED_KEY = "pieces-android:shizukuToolkitEnabled";
+const SCREEN_CONTEXT_ENABLED_KEY = "pieces-android:screenContextEnabled";
 
 export async function getProxyBaseUrl(): Promise<string | null> {
   const { value } = await Preferences.get({ key: PROXY_BASE_URL_KEY });
@@ -52,4 +53,18 @@ export async function isShizukuToolkitEnabled(): Promise<boolean> {
 
 export async function setShizukuToolkitEnabled(enabled: boolean): Promise<void> {
   await Preferences.set({ key: SHIZUKU_ENABLED_KEY, value: String(enabled) });
+}
+
+// Independent of Shizuku. Screen-context capture only needs Android's
+// standard Accessibility Service permission — a manual one-time toggle in
+// system Settings, same mechanism screen readers and password managers use.
+// Off by default, same reasoning as the Shizuku toolkit: this is powerful
+// enough that it must be an explicit, informed opt-in.
+export async function isScreenContextEnabled(): Promise<boolean> {
+  const { value } = await Preferences.get({ key: SCREEN_CONTEXT_ENABLED_KEY });
+  return value === "true";
+}
+
+export async function setScreenContextEnabled(enabled: boolean): Promise<void> {
+  await Preferences.set({ key: SCREEN_CONTEXT_ENABLED_KEY, value: String(enabled) });
 }

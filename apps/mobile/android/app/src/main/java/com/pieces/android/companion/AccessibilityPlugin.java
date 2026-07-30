@@ -1,8 +1,11 @@
 package com.pieces.android.companion;
 
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.provider.Settings;
+import android.text.TextUtils;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -181,6 +184,32 @@ public class AccessibilityPlugin extends Plugin {
         getPrefs().edit().putBoolean(PASSIVE_MODE_KEY, enabled).apply();
         JSObject ret = new JSObject();
         ret.put("status", "saved");
+        call.resolve(ret);
+    }
+
+    // Standalone path to enabling the Accessibility Service — no Shizuku
+    // required. Opens Android's own Accessibility Settings screen; the user
+    // finds "Pieces Android Companion" in the list and flips it on manually,
+    // same as enabling a screen reader or password-manager autofill service.
+    @PluginMethod
+    public void openAccessibilitySettings(PluginCall call) {
+        Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        getContext().startActivity(intent);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void isAccessibilityServiceEnabled(PluginCall call) {
+        String enabledServices = Settings.Secure.getString(
+            getContext().getContentResolver(),
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        );
+        String target = getContext().getPackageName() + "/" + PiecesAccessibilityService.class.getName();
+        boolean enabled = !TextUtils.isEmpty(enabledServices) && enabledServices.contains(target);
+
+        JSObject ret = new JSObject();
+        ret.put("enabled", enabled);
         call.resolve(ret);
     }
 
