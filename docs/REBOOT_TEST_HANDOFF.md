@@ -1,120 +1,79 @@
 # Reboot test — proxy auto-start verification
 
-Context for whoever (Claude or Michael) picks this up after the PC reboots.
+Context for whoever (Claude or Michael) picks this up.
 
-## Round 2 findings (2026-07-30, ~05:25 AM, after the first real reboot)
+## Status: CONFIRMED WORKING (2026-07-30)
 
-The first reboot test happened (confirmed via `LastBootUpTime`, uptime ~14 min
-at check time). Results:
+The `PiecesAndroidProxy` Windows Scheduled Task reliably brings the proxy up
+on boot with nobody signed in. This was an open gap flagged in
+`docs/ACCEPTANCE.md` — it's now closed. No further action needed on this
+specific item unless it's observed to fail again.
 
-- **The scheduled task DID fire** — `Get-ScheduledTaskInfo` showed
-  `LastRunTime` ~14s after boot, `LastTaskResult: 0`. Earlier assumption in
-  this doc ("never run") was wrong — it was based on absent evidence (event
-  log was disabled), not confirmed absence.
-- **But the proxy was NOT listening on 8787** after boot. A node process WAS
-  running, but investigation (`Get-CimInstance Win32_Process -Filter
-  "ProcessId = ..."` for the real command line, not the truncated
-  `Get-Process` one) showed it was `openclaw gateway --port 18789` —
-  completely unrelated. The actual proxy process was not present.
-- `service-wrapper.ps1` had **zero output capture** — no way to see why it
-  failed silently at boot. Manually re-running the exact same script
-  interactively worked fine (proxy came up, `{"ok":true}`), so the script
-  itself isn't broken — something about the **boot-time S4U session context**
-  specifically breaks it (S4U runs logged-out, before the user profile is
-  fully loaded — candidates: OneDrive Files-On-Demand hydration timing for
-  the synced repo path, `npx`/node PATH resolution differences in that
-  session type, or a race with network/PiecesOS not being up yet).
-- **Fixed**: rewrote `service-wrapper.ps1` to log everything to
-  `~/.claude/pieces-proxy-service.log` — start marker, full PATH, working
-  dir before/after `Set-Location`, token file existence check, all
-  `npx tsx` stdout/stderr, and an exit-code marker. Verified via a detached
-  `Start-Process` launch (mimics how Task Scheduler invokes it) — worked
-  correctly outside the S4U context, confirming the logging itself is sound
-  and will actually capture the real failure next boot.
-- Committed as `7168bd3`.
+## What we tested and found
 
-**Next step for round 3**: reboot again, then check
-`~/.claude/pieces-proxy-service.log` — it should now show exactly what
-`npx tsx` did or didn't do at boot time. If the log file doesn't even exist
-after reboot, the wrapper script itself never launched (task-definition/
-trigger issue, not a script bug) — check `Get-ScheduledTaskInfo` and the
-Task Scheduler event log again in that case.
+Task Scheduler's history logging was OFF by default the whole time, so
+there was no event-log record of whether the scheduled task had ever
+actually fired — an earlier working assumption that it "never ran" was
+wrong, just based on absent evidence. Fixed by enabling the log:
+```powershell
+wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
+```
 
-## Round 3 — CONFIRMED WORKING (2026-07-30, ~05:46 AM)
+**Round 1 reboot**: task fired (`LastRunTime` ~14s after boot,
+`LastTaskResult: 0`), but the proxy wasn't listening on 8787 afterward. A
+node process was running, but turned out to be an unrelated tool
+(`openclaw gateway --port 18789`), not the proxy at all — the actual proxy
+process was never present. `service-wrapper.ps1` had zero output capture,
+so there was no way to see why it failed silently at boot.
 
-Rebooted again with the new logging wrapper in place. Result: **success.**
+**Fix**: rewrote `apps/proxy/scripts/service-wrapper.ps1` (commit
+`7168bd3`) to log everything to `~/.claude/pieces-proxy-service.log` —
+start marker, full PATH, working directory before/after `Set-Location`,
+token file existence check, all `npx tsx` stdout/stderr, and an exit-code
+marker.
 
-- `LastBootUpTime`: 05:40:32. Log shows a fresh `service-wrapper starting`
-  entry at 05:41:06 (~34s after boot) with `PWD before Set-Location:
-  C:\WINDOWS\system32` — confirms this is a genuine boot-time S4U launch,
-  not an interactive session artifact.
-- Log shows: ProxyDir exists, TokenFile exists, `Set-Location` succeeded,
-  and `pieces-android proxy listening on 0.0.0.0:8787` — the proxy actually
-  started successfully at boot with nobody signed in.
-- Verified independently: `curl http://127.0.0.1:8787/mobile/health` →
-  `{"ok":true}` several minutes after boot, proxy still up.
+**Round 2 reboot** (~05:41 AM): log shows a fresh `service-wrapper starting`
+entry ~34s after boot, with `PWD before Set-Location: C:\WINDOWS\system32`
+(confirming a genuine boot-time S4U launch, not a manual test). ProxyDir
+and TokenFile both existed, `Set-Location` succeeded, and the log ends with
+`pieces-android proxy listening on 0.0.0.0:8787`. Verified independently
+minutes later: `curl http://127.0.0.1:8787/mobile/health` → `{"ok":true}`.
 
-**This closes the boot-survival gap flagged in `docs/ACCEPTANCE.md`.** The
-round-2 failure (proxy not listening, only an unrelated `openclaw` process
-found) appears to have been a one-off/transient issue at that specific
-boot — the exit-code-`-1` log line from that window was actually from
-manually killing a test process, not a real crash of the boot-launched
-instance. The logging fix (`7168bd3`) is what let us tell the difference
-between "never ran" and "ran, but something failed" — worth keeping this
-logging in place going forward as an early-warning signal if it ever
-silently regresses again.
+The round-1 failure looks like a one-off/transient issue at that specific
+boot rather than a structural problem — the logging fix is what made it
+possible to tell "never ran" apart from "ran, but something failed," and
+is worth keeping in place as an early-warning signal if this ever
+regresses.
 
-**Status: proxy now reliably starts on boot. No further action needed on
-this specific gap** unless it's observed to fail again — if so, the log at
-`~/.claude/pieces-proxy-service.log` is the first place to look.
+## If it ever fails again, check
 
-## What we're testing
-
-Whether the `PiecesAndroidProxy` Windows Scheduled Task actually brings the
-proxy up on its own after a reboot, with nobody signing back in and running
-it manually. This has never been conclusively verified — `docs/ACCEPTANCE.md`
-flagged it as an open gap, and Task Scheduler's history logging was OFF by
-default the whole time, so there's no event-log record either way.
-
-## What was done just before the reboot (2026-07-30)
-
-1. Confirmed `Microsoft-Windows-TaskScheduler/Operational` log was disabled
-   (`Get-WinEvent -ListLog ... | Select IsEnabled` → `False`).
-2. Enabled it: `wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true`
-   (if this hasn't actually been run yet, run it before rebooting again).
-3. Rebooted the PC.
-
-## What to check after reboot, without signing in manually if possible (or immediately after signing in)
-
-1. **Is the proxy actually listening?**
+1. **Is the proxy listening?**
    ```powershell
    Get-NetTCPConnection -LocalPort 8787 -ErrorAction SilentlyContinue
    ```
-   or from another device on the LAN: `curl http://192.168.50.104:8787/mobile/health`
-   (LAN IP may have changed — check `ipconfig` if that fails)
+   or from another device on the LAN: `curl http://<pc-lan-ip>:8787/mobile/health`
 
-2. **Did the scheduled task actually fire?**
+2. **Did the scheduled task fire, and what did it log?**
    ```powershell
    Get-ScheduledTaskInfo -TaskName "PiecesAndroidProxy" | Select LastRunTime, LastTaskResult
-   Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TaskScheduler/Operational'} -MaxEvents 50 |
-     Where-Object { $_.Message -match "PiecesAndroidProxy" } | Select TimeCreated, Id, Message
+   Get-Content "$env:USERPROFILE\.claude\pieces-proxy-service.log" -Tail 50
    ```
+   If the log file doesn't exist at all after a reboot, the wrapper script
+   itself never launched (task-definition/trigger issue) — check
+   `Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TaskScheduler/Operational'}`
+   for `PiecesAndroidProxy` entries.
 
-3. **If it didn't fire or the proxy isn't up**, check:
-   - `apps/proxy/scripts/service-wrapper.ps1` — does it actually run the proxy correctly headless?
-   - Whether the proxy's working directory (OneDrive-synced path) was fully
-     hydrated at boot time — `docs/ACCEPTANCE.md` flagged OneDrive
-     Files-On-Demand placeholders as a specific risk for S4U tasks that run
-     before anyone signs in.
-   - `PROXY_BEARER_TOKEN` env var — how does the wrapper script supply this
-     at boot? (worth checking it's not depending on a user-session env var
-     that doesn't exist yet at S4U/boot time)
+3. **Other known risk factors** (from `docs/ACCEPTANCE.md`): the proxy's
+   working directory lives under OneDrive — Files-On-Demand hydration
+   timing could theoretically cause a boot-time failure if the repo isn't
+   fully synced yet; `PROXY_BEARER_TOKEN` is read from a token file on disk
+   specifically because S4U sessions have no interactive user env vars.
 
 ## Where things stood otherwise (2026-07-30 session)
 
 - PiecesOS asset flood (582 test-session telemetry rows) was cleaned up —
   580 deleted via PiecesOS's real `/assets/{id}/delete` API, 5 legitimate
-  assets preserved and verified clean. Full DB backup at
+  assets preserved and verified clean beforehand. Full DB backup at
   `Pieces OS/com.pieces.os/production/Backups/manual-precleanup-20260729-214702`.
 - Screen-context capture (Accessibility Service) was decoupled from Shizuku —
   now an independent opt-in via Setup, no Shizuku/ADB required. Shizuku
