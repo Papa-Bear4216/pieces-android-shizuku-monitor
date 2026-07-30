@@ -59,7 +59,36 @@ public class AccessibilityPlugin extends Plugin {
         "com.wellsfargo",
         "com.citi",
         "com.capitalone",
-        "com.usaa"
+        "com.usaa",
+        // Messaging / SMS / calling
+        "com.google.android.apps.messaging",
+        "com.samsung.android.messaging",
+        "com.whatsapp",
+        "com.facebook.orca",       // Messenger
+        "org.telegram.messenger",
+        "org.thoughtcrime.securesms", // Signal
+        "com.discord",
+        "com.google.android.talk", // Hangouts/Chat
+        "com.skype.raider",
+        "com.google.android.apps.tachyon", // Google Meet/Duo
+        "com.samsung.android.incallui",
+        "com.android.mms",
+        "com.android.phone",
+        // Email
+        "com.google.android.gm",   // Gmail
+        "com.microsoft.office.outlook",
+        "com.samsung.android.email.provider",
+        "com.yahoo.mobile.client.android.mail",
+        // Social
+        "com.facebook.katana",
+        "com.instagram.android",
+        "com.twitter.android",
+        "com.zhiliaoapp.musically", // TikTok
+        "com.snapchat.android",
+        "com.reddit.frontpage",
+        "com.linkedin.android",
+        "com.pinterest",
+        "com.tumblr"
     );
 
     private boolean isExcluded(String packageName) {

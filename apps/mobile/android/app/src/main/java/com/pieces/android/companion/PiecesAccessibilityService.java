@@ -1,6 +1,8 @@
 package com.pieces.android.companion;
 
 import android.accessibilityservice.AccessibilityService;
+import android.app.KeyguardManager;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
@@ -40,6 +42,11 @@ public class PiecesAccessibilityService extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null || event.getSource() == null) return;
 
+        // Never capture off the lock screen — notification previews (SMS,
+        // email, chat) render as real accessibility content there even
+        // though the user hasn't unlocked or interacted with anything.
+        if (isLocked()) return;
+
         String packageName = event.getPackageName() != null ? event.getPackageName().toString() : "";
         if (!isAllowed(packageName)) return;
 
@@ -73,6 +80,11 @@ public class PiecesAccessibilityService extends AccessibilityService {
             if (listener != null) listener.onCapture(packageName, text);
         };
         debounceHandler.postDelayed(pendingPush, DEBOUNCE_MS);
+    }
+
+    private boolean isLocked() {
+        KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
+        return km == null || km.isKeyguardLocked();
     }
 
     private boolean isPassiveModeEnabled() {
