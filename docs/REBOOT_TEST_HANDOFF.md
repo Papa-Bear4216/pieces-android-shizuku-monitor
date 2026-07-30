@@ -40,6 +40,34 @@ after reboot, the wrapper script itself never launched (task-definition/
 trigger issue, not a script bug) — check `Get-ScheduledTaskInfo` and the
 Task Scheduler event log again in that case.
 
+## Round 3 — CONFIRMED WORKING (2026-07-30, ~05:46 AM)
+
+Rebooted again with the new logging wrapper in place. Result: **success.**
+
+- `LastBootUpTime`: 05:40:32. Log shows a fresh `service-wrapper starting`
+  entry at 05:41:06 (~34s after boot) with `PWD before Set-Location:
+  C:\WINDOWS\system32` — confirms this is a genuine boot-time S4U launch,
+  not an interactive session artifact.
+- Log shows: ProxyDir exists, TokenFile exists, `Set-Location` succeeded,
+  and `pieces-android proxy listening on 0.0.0.0:8787` — the proxy actually
+  started successfully at boot with nobody signed in.
+- Verified independently: `curl http://127.0.0.1:8787/mobile/health` →
+  `{"ok":true}` several minutes after boot, proxy still up.
+
+**This closes the boot-survival gap flagged in `docs/ACCEPTANCE.md`.** The
+round-2 failure (proxy not listening, only an unrelated `openclaw` process
+found) appears to have been a one-off/transient issue at that specific
+boot — the exit-code-`-1` log line from that window was actually from
+manually killing a test process, not a real crash of the boot-launched
+instance. The logging fix (`7168bd3`) is what let us tell the difference
+between "never ran" and "ran, but something failed" — worth keeping this
+logging in place going forward as an early-warning signal if it ever
+silently regresses again.
+
+**Status: proxy now reliably starts on boot. No further action needed on
+this specific gap** unless it's observed to fail again — if so, the log at
+`~/.claude/pieces-proxy-service.log` is the first place to look.
+
 ## What we're testing
 
 Whether the `PiecesAndroidProxy` Windows Scheduled Task actually brings the
