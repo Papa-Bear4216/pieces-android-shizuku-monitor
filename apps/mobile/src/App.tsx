@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
+import { HashRouter, Routes, Route, Navigate } from "react-router";
 import Setup from "./pages/Setup";
 import Status from "./pages/Status";
 import Ask from "./pages/Ask";

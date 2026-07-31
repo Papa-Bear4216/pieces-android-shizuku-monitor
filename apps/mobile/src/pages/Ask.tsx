@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { ask, ProxyNotConfiguredError, HomeNodeUnreachableError, type AskResult } from "../lib/api";
 import { recordEvent } from "../lib/usage";
 import { flushUsageEvents } from "../lib/flush";
