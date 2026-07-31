@@ -1,5 +1,7 @@
 package com.pieces.android.companion;
 
+import android.content.SharedPreferences;
+
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -40,6 +42,49 @@ public class ShizukuMonitorPlugin extends Plugin {
     private static final String ACCESSIBILITY_SERVICE_ID =
         "com.pieces.android.companion/com.pieces.android.companion.PiecesAccessibilityService";
 
+    // Mirrors AccessibilityPlugin's own prefs store — kept as one shared file so
+    // both plugins' opt-in flags live in the same place the native side reads.
+    private static final String TOOLKIT_ENABLED_KEY = "shizuku_toolkit_enabled";
+
+    private SharedPreferences getPrefs() {
+        return getContext().getSharedPreferences(AccessibilityPlugin.PREFS_NAME, android.content.Context.MODE_PRIVATE);
+    }
+
+    private boolean isToolkitEnabled() {
+        return getPrefs().getBoolean(TOOLKIT_ENABLED_KEY, false);
+    }
+
+    // Mirrors the JS-side Capacitor Preferences flag (config.ts's
+    // shizukuToolkitEnabled) into native SharedPreferences — previously the
+    // toolkit's privileged methods were reachable from any WebView JS
+    // regardless of whether the user had ever flipped the Setup toggle on.
+    @PluginMethod
+    public void setToolkitEnabled(PluginCall call) {
+        Boolean enabled = call.getBoolean("enabled");
+        if (enabled == null) {
+            call.reject("Must provide enabled boolean");
+            return;
+        }
+        getPrefs().edit().putBoolean(TOOLKIT_ENABLED_KEY, enabled).apply();
+        JSObject ret = new JSObject();
+        ret.put("status", "saved");
+        call.resolve(ret);
+    }
+
+    // Reports whether Shizuku is actually reachable and permission-granted —
+    // used by App.tsx on launch to decide whether to show the "offline"
+    // banner. Previously App.tsx called a checkPermission() method that
+    // didn't exist here at all, so this call always failed and the banner
+    // showed regardless of Shizuku's real state.
+    @PluginMethod
+    public void checkPermission(PluginCall call) {
+        JSObject ret = new JSObject();
+        boolean granted = Shizuku.pingBinder()
+            && Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        ret.put("status", granted ? "granted" : "not_granted");
+        call.resolve(ret);
+    }
+
     private String runShell(String command) throws Exception {
         ShizukuRemoteProcess process = Shizuku.newProcess(new String[]{"sh", "-c", command}, null, null);
         BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
@@ -52,31 +97,12 @@ public class ShizukuMonitorPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void getMetrics(PluginCall call) {
-        if (!Shizuku.pingBinder()) {
-            call.reject("Shizuku is not active. Start the Shizuku app daemon.");
-            return;
-        }
-
-        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            Shizuku.requestPermission(0);
-            call.reject("Shizuku permission requested. Please approve in the Shizuku app.");
-            return;
-        }
-
-        executor.execute(() -> {
-            try {
-                JSObject ret = new JSObject();
-                ret.put("metrics", runShell("dumpsys meminfo && top -n 1 -m 5"));
-                call.resolve(ret);
-            } catch (Exception e) {
-                call.reject("Privileged execution failed: " + e.getMessage());
-            }
-        });
-    }
-
-    @PluginMethod
     public void executeCommand(PluginCall call) {
+        if (!isToolkitEnabled()) {
+            call.reject("Shizuku toolkit is not enabled. Enable it in Setup first.");
+            return;
+        }
+
         String command = call.getString("command");
         if (command == null || command.isEmpty()) {
             call.reject("Must provide a command string");

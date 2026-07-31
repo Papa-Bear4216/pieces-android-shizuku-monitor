@@ -41,11 +41,21 @@ export default function Setup() {
   async function handleToggleScreenContext(next: boolean) {
     setScreenContext(next);
     await setScreenContextEnabled(next);
+    try {
+      await AccessibilityScanner.setScreenContextEnabled({ enabled: next });
+    } catch (e) {
+      console.warn("[Accessibility] setScreenContextEnabled failed", e);
+    }
   }
 
   async function handleToggleShizuku(next: boolean) {
     setShizukuToolkit(next);
     await setShizukuToolkitEnabled(next);
+    try {
+      await ShizukuMonitor.setToolkitEnabled({ enabled: next });
+    } catch (e) {
+      console.warn("[Shizuku] setToolkitEnabled failed", e);
+    }
     if (next) {
       // First-enable: try to turn on the accessibility service right away
       // rather than waiting for the next app launch. Best-effort — if

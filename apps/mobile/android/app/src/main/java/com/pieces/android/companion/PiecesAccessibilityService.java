@@ -42,6 +42,12 @@ public class PiecesAccessibilityService extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null || event.getSource() == null) return;
 
+        // Master switch mirrored from the JS-side Setup toggle (config.ts's
+        // screenContextEnabled) — fail-closed if the flag has never been
+        // written, so a fresh install captures nothing until explicitly
+        // opted in from Setup, not just because Accessibility is granted.
+        if (!isScreenContextEnabled()) return;
+
         // Never capture off the lock screen — notification previews (SMS,
         // email, chat) render as real accessibility content there even
         // though the user hasn't unlocked or interacted with anything.
@@ -85,6 +91,11 @@ public class PiecesAccessibilityService extends AccessibilityService {
     private boolean isLocked() {
         KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
         return km == null || km.isKeyguardLocked();
+    }
+
+    private boolean isScreenContextEnabled() {
+        SharedPreferences prefs = getSharedPreferences(AccessibilityPlugin.PREFS_NAME, MODE_PRIVATE);
+        return prefs.getBoolean(AccessibilityPlugin.SCREEN_CONTEXT_ENABLED_KEY, false);
     }
 
     private boolean isPassiveModeEnabled() {

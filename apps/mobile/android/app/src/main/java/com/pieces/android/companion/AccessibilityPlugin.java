@@ -26,6 +26,7 @@ public class AccessibilityPlugin extends Plugin {
     static final String PREFS_NAME = "pieces_accessibility_prefs";
     static final String ALLOWLIST_KEY = "captured_package_allowlist";
     static final String PASSIVE_MODE_KEY = "passive_mode_enabled";
+    static final String SCREEN_CONTEXT_ENABLED_KEY = "screen_context_enabled";
 
     @Override
     public void load() {
@@ -157,6 +158,24 @@ public class AccessibilityPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("status", "saved");
         ret.put("count", allowlist.size());
+        call.resolve(ret);
+    }
+
+    // Mirrors the JS-side Capacitor Preferences flag (config.ts's
+    // screenContextEnabled) into the native SharedPreferences store the
+    // accessibility service actually reads (PiecesAccessibilityService.isAllowed
+    // and the passive-mode gate both check this) — previously the native layer
+    // never saw this flag at all, so toggling it off in Setup didn't stop capture.
+    @PluginMethod
+    public void setScreenContextEnabled(PluginCall call) {
+        Boolean enabled = call.getBoolean("enabled");
+        if (enabled == null) {
+            call.reject("Must provide enabled boolean");
+            return;
+        }
+        getPrefs().edit().putBoolean(SCREEN_CONTEXT_ENABLED_KEY, enabled).apply();
+        JSObject ret = new JSObject();
+        ret.put("status", "saved");
         call.resolve(ret);
     }
 
