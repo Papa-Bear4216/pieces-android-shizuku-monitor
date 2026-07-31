@@ -82,10 +82,11 @@ const server = createServer(async (req, res) => {
   // forwards rather than logging locally so Plan A and Plan B events land in
   // the same file on the PC instead of splitting across two logs.
   const isAsk = method === "POST" && url.pathname === "/mobile/ask";
+  const isRelevantSearch = method === "GET" && url.pathname === "/mobile/search/relevant";
   const isUsageReport = method === "POST" && url.pathname === "/mobile/usage-report";
   const isAssetFetch = method === "GET" && url.pathname.startsWith("/mobile/asset/");
   const isConversationFetch = method === "GET" && url.pathname.startsWith("/mobile/conversation/") && url.pathname.endsWith("/messages");
-  const route = isAsk || isUsageReport || isAssetFetch || isConversationFetch ? { piecesPath: "" } : findAllowedRoute(method, url.pathname);
+  const route = isAsk || isRelevantSearch || isUsageReport || isAssetFetch || isConversationFetch ? { piecesPath: "" } : findAllowedRoute(method, url.pathname);
 
   if (!route) {
     // Deny-by-default: same allowlist module as Plan A. Anything not listed

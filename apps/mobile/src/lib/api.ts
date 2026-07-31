@@ -117,6 +117,25 @@ export async function searchAssets(query: string): Promise<AssetSummary[]> {
   }));
 }
 
+/**
+ * Semantic (embeddings-based) search over PiecesOS assets — distinct from
+ * searchAssets()'s plain text match. Backed by /qgpt/relevance with
+ * options.database:true, confirmed live on PiecesOS 12.6.0 (see
+ * docs/ALLOWED_ROUTES.md) after being HTTP 500 on 12.5.0.
+ */
+export async function searchRelevant(query: string): Promise<AssetSummary[]> {
+  const res = await authedFetch(`/mobile/search/relevant?query=${encodeURIComponent(query)}`);
+  if (!res.ok) throw new Error(`Relevant search failed: HTTP ${res.status}`);
+  const body = await res.json();
+  const iterable = Array.isArray(body?.iterable) ? body.iterable : [];
+  return iterable.map((a: Record<string, any>) => ({
+    id: a.id,
+    name: a.name,
+    created: a.created ?? "",
+    updated: a.updated ?? "",
+  }));
+}
+
 export async function getAsset(id: string): Promise<string> {
   const res = await authedFetch(`/mobile/asset/${id}`);
   if (!res.ok) throw new Error(`Asset fetch failed: HTTP ${res.status}`);

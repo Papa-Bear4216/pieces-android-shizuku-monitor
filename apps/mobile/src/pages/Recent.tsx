@@ -4,6 +4,7 @@ import {
   getRecentConversations,
   getRecentAssets,
   searchAssets,
+  searchRelevant,
   getAsset,
   getConversationMessages,
   ProxyNotConfiguredError,
@@ -64,6 +65,27 @@ export default function Recent() {
       setSearchResults(null);
       return;
     }
+    // Prefer semantic (embeddings-based) relevance search — better matches
+    // than plain text search, e.g. finds results that don't share exact
+    // wording with the query. Falls back to searchAssets() (plain text
+    // match) if relevance search fails, so search still works if PiecesOS
+    // regresses on /qgpt/relevance or an older home proxy is in the path.
+    let usedFallback = false;
+    try {
+      const results = await searchRelevant(query);
+      setSearchResults(results);
+      recordEvent({
+        type: "search",
+        screen: "recent",
+        query,
+        resultCount: results.length,
+        mode: "relevant",
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    } catch (err) {
+      usedFallback = true;
+    }
     try {
       const results = await searchAssets(query);
       setSearchResults(results);
@@ -72,6 +94,7 @@ export default function Recent() {
         screen: "recent",
         query,
         resultCount: results.length,
+        mode: usedFallback ? "text-fallback" : "text",
         timestamp: new Date().toISOString(),
       });
     } catch (err) {
@@ -124,7 +147,7 @@ export default function Recent() {
         Search assets
         <input
           type="text"
-          placeholder="search…"
+          placeholder="search by meaning or exact text…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSearch()}

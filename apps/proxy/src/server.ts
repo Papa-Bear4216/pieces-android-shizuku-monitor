@@ -123,6 +123,24 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Semantic (embeddings-based) search, distinct from /mobile/recent/search's
+  // plain text match — special-cased like /mobile/ask because it needs
+  // PiecesClient.relevantAssets()'s ID-hydration step, not a raw passthrough.
+  if (method === "GET" && url.pathname === "/mobile/search/relevant") {
+    const query = url.searchParams.get("query");
+    if (!query || query.trim() === "") {
+      sendJson(res, 400, { error: "query is required" });
+      return;
+    }
+    try {
+      const results = await pieces.relevantAssets(query);
+      sendJson(res, 200, { iterable: results });
+    } catch (err) {
+      sendJson(res, 502, { error: "PiecesOS relevance search failed", detail: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
+
   // Not a PiecesOS route — terminates here and writes to the local usage log.
   // Special-cased for the same reason /mobile/ask is: packages/allowlist maps
   // mobile paths to PiecesOS paths, and this route has no PiecesOS counterpart.

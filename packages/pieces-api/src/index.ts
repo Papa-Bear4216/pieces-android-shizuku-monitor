@@ -44,8 +44,8 @@ export class PiecesClient {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  private fetch(path: string, init?: RequestInit): Promise<Response> {
-    return fetch(`${this.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(this.timeoutMs) });
+  private fetch(path: string, init?: RequestInit, timeoutMs = this.timeoutMs): Promise<Response> {
+    return fetch(`${this.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   }
 
   async health(): Promise<HealthResult> {
@@ -100,6 +100,60 @@ export class PiecesClient {
       created: r.asset?.created?.readable ?? r.asset?.created?.value,
       updated: r.asset?.updated?.readable ?? r.asset?.updated?.value,
     }));
+  }
+
+  /**
+   * POST /qgpt/relevance with options.database:true — semantic (embeddings-based)
+   * search over assets, distinct from searchAssets()'s plain text match. Confirmed
+   * live on PiecesOS 12.6.0 in docs/ALLOWED_ROUTES.md (was HTTP 500 on 12.5.0).
+   * The relevance response only carries asset IDs, so each hit is hydrated via
+   * GET /asset/{id} to get name/created/updated for display — same shape as
+   * searchAssets() so callers can treat both the same way.
+   *
+   * Uses a longer timeout than the client default: measured 5.5s for the raw
+   * relevance call alone against 108 real assets, already exceeding the 5s
+   * default tuned for single-call passthrough routes, before hydration even
+   * starts. RELEVANCE_TIMEOUT_MS gives headroom for the search plus the
+   * parallel hydration fan-out.
+   */
+  async relevantAssets(query: string, limit = 25): Promise<AssetSummary[]> {
+    const RELEVANCE_TIMEOUT_MS = 15000;
+    const res = await this.fetch(
+      "/qgpt/relevance",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, options: { database: true } }),
+      },
+      RELEVANCE_TIMEOUT_MS,
+    );
+    if (!res.ok) throw new Error(`relevantAssets failed: HTTP ${res.status}`);
+    const body = await res.json();
+    const iterable = Array.isArray(body?.relevant?.iterable) ? body.relevant.iterable : [];
+    const ids: string[] = iterable
+      .map((r: Record<string, any>) => r.asset?.id ?? r.id)
+      .filter((id: unknown): id is string => typeof id === "string")
+      .slice(0, limit);
+
+    const hydrated = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const assetRes = await this.fetch(`/asset/${id}`, undefined, RELEVANCE_TIMEOUT_MS);
+          if (!assetRes.ok) return null;
+          const asset = await assetRes.json();
+          return {
+            id: asset.id,
+            name: asset.name ?? "(untitled)",
+            created: asset.created?.readable ?? asset.created?.value ?? "",
+            updated: asset.updated?.readable ?? asset.updated?.value ?? "",
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    // Relevance order matters (it's ranked by match quality) — filter, don't re-sort.
+    return hydrated.filter((a): a is AssetSummary => a !== null);
   }
 
   /**

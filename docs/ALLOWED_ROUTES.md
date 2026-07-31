@@ -51,6 +51,108 @@ resolved on the PiecesOS side.** Needs your input: check Pieces desktop app sett
 model configuration before the mobile Ask screen can do anything beyond a "service
 unavailable" state.
 
+**Root cause confirmed (2026-08-01):** `GET /models` (documented in the
+`pieces-os-client-openapi-spec` repo, not in `docs.pieces.app`) returns a live snapshot of
+every model PiecesOS knows about. On this install, all 98 models — cloud and local —
+show `"downloaded": false, "loaded": false`. That's the entire explanation: `/qgpt/*`
+500s because there is genuinely no model backing answer generation, not a request-shape
+or path problem. `GET /model/{id}` returns the same per-model detail; `POST
+/model/{id}/download` then `POST /model/{id}/load` are the fix (both accept only the
+model's UUID as a path param, no request body). Download is async — the response comes
+back immediately with `downloaded: false`, so poll `GET /model/{id}` for `downloaded:
+true` before calling `/load`.
+
+Triggered a live test: `POST /model/6023776a-aea6-4369-8041-e26b690eaddb/download`
+(`qwen3:4b-q4_K_S` — chosen because it's small, fully local, and needs no cloud API key,
+unlike every `cloud: true` entry in the list such as the Claude/GPT/Gemini chat models).
+
+**Download succeeded** — polled `GET /model/{id}` until `downloaded: true` (confirmed,
+persists across calls). **`POST /model/{id}/load` then failed with HTTP 500**:
+
+```
+Model load failed: Bad state: Local LLM engine is not initialized. Call
+LocalLlmFacade.initialize() first.
+```
+
+`LocalLlmFacade.initialize()` is not exposed anywhere in the OpenAPI spec (checked —
+grepped all 392 routes for engine/llm/runtime/initialize, nothing matches) — it's internal
+PiecesOS engine plumbing, not a callable API route.
+
+**Correction — there is no Settings → Models page.** Walked the actual Pieces Desktop UI
+(6.1.0) end to end: profile avatar → Settings has 8 sections (All, Account, Long-Term
+Memory, MCP, Connectors, Appearance, Language, Troubleshooting) and none of them expose
+model download/load/enable controls. Model selection lives entirely in the chat composer
+itself (a "Claude · Extra Thinking"-style dropdown, options Claude/Gemini/GPT/Grok, all
+`cloud:true`), not in Settings — so the `qwen3:4b` local-model download/load path above
+was very likely the wrong lever entirely, not just blocked on a missing manual step.
+
+**PiecesOS update changed the picture.** While finding Settings, Pieces Desktop flagged
+"PiecesOS Update Required" (had drifted to require ≥12.6.0; this install was still on
+12.5.0). Updated via the in-app "Download Update & Restart" button — confirmed via
+`GET /.well-known/version` → `12.6.0` post-restart. **Re-ran the full test matrix
+afterward with real evidence, not assumptions:**
+
+| Call | Result after 12.6.0 update |
+|---|---|
+| `/qgpt/relevance`, no scope | 200 (unchanged, was already working) |
+| `/qgpt/relevance`, `options.database:true` | **200 — now returns ~100 real matched asset IDs.** Previously 500. **Fixed by the version update alone**, nothing to do with model config. |
+| `/qgpt/relevance`, `options.database:true, options.question:true` | Still 500 `"qGPT Relevance Endpoint failed."` |
+| `/qgpt/question` (direct), empty `relevant.iterable`, no `model` | Still 500 `"qGPT Question Endpoint failed."` |
+| `/qgpt/question`, explicit `model` = a random unloaded local model ID | Still 500 (expected — bad test, that model genuinely isn't loaded) |
+| `/qgpt/question`, explicit `model` = `a737e3fb-3673-4872-90c1-c8ad70c88099` (`Claude 4.5 Sonnet Chat Model`, a `cloud:true` model matching what the working desktop chat UI uses) | **Still 500**, identical error |
+
+**Revised conclusion:** the 12.6.0 update fixed the *relevance/search* half of Ask
+(database-scoped semantic search over assets — genuinely useful on its own for e.g. a
+"search my notes" feature) but did **not** fix *answer generation*
+(`question:true` / `/qgpt/question`). Ruled out "wrong or unloaded model ID" as the cause
+of the remaining 500 — an explicit, correctly-typed cloud chat-model ID (the same category
+the desktop app's own working chat uses) still 500s identically to no model specified at
+all. This points to either (a) `/qgpt/question` being broken/deprecated server-side
+independent of model config — worth trying the `WS /qgpt/stream` variant noted below
+instead, since the desktop app's chat may route through that, not the REST endpoint — or
+(b) some other undiscovered prerequisite. Not resolvable further via REST alone without
+more PiecesOS-side error detail than the plain-text 500 body provides.
+
+**Current state for the mobile Ask feature:** still not viable end-to-end. Recommend
+narrowing scope to what's now proven working — database-scoped `/qgpt/relevance` as a
+"search your memories" feature — rather than continuing to block on full Q&A-style Ask
+until the `/qgpt/question` / `WS /qgpt/stream` question is resolved.
+
+## Semantic search shipped (2026-08-01)
+
+Wired up `/qgpt/relevance` with `options.database:true` as a real feature, separate from
+the still-broken Ask/`/qgpt/question` path:
+
+- `PiecesClient.relevantAssets(query)` in `packages/pieces-api` — calls the relevance
+  endpoint, then hydrates each returned asset ID via `GET /asset/{id}` (name/created/
+  updated) since the relevance response only carries bare IDs. Preserves relevance-ranked
+  order; does not re-sort.
+- **Timeout note:** the raw relevance call alone measured 5.5s against 108 real assets,
+  already over the client's 5s default (tuned for single-call passthrough routes) before
+  hydration even starts. `relevantAssets()` uses its own 15s budget (`RELEVANCE_TIMEOUT_MS`)
+  for both the relevance call and the hydration fan-out — added a `timeoutMs` override
+  param to `PiecesClient`'s private `fetch()` to support this without changing the
+  client-wide default other routes rely on.
+- `GET /mobile/search/relevant?query=` in `apps/proxy` — special-cased like `/mobile/ask`
+  (needs the typed hydration step, not a raw allowlist passthrough). Mirrored into
+  `apps/pieces-gateway`'s `isRelevantSearch` passthrough check for the remote-access path;
+  no gateway body-forwarding change needed since it's a GET with the query in `url.search`.
+- `searchRelevant()` in `apps/mobile/src/lib/api.ts`, wired into `Recent.tsx`'s existing
+  search box: tries semantic search first, falls back to the pre-existing
+  `searchAssets()` (plain text match via `/assets/search`) if relevance search throws —
+  so search keeps working even if PiecesOS regresses on `/qgpt/relevance` again or an
+  older home proxy build is in the path. `UsageEvent`'s `"search"` variant gained a
+  `mode: "relevant" | "text" | "text-fallback"` field to distinguish which path served
+  a given search in the usage log.
+
+**Verified end-to-end** against the live proxy (test instance, port 8799): query
+`"pieces-android"` → 200, real hydrated results with names in ~8s (e.g. "AndroidContext
+v1: Android Context with Raw Telemetry Block" — genuinely relevant hits pulled from this
+debugging session's own captured telemetry, not placeholder data). `apps/mobile` typechecks
+and builds clean (`npx tsc --noEmit`, `npm run build`). `apps/proxy` and
+`apps/pieces-gateway` have no tsconfig/static typecheck gate (run via `tsx`, validated by
+this live test instead).
+
 ## Confirmed NOT working
 
 | Method | Path | Result |
