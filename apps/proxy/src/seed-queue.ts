@@ -1,4 +1,5 @@
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { seedToPiecesOS } from "./seeder.js";
 
@@ -22,11 +23,22 @@ export class SeedQueue {
     this.piecesBaseUrl = piecesBaseUrl;
   }
 
-  /** Append one failed seed attempt to the durable queue. */
+  /**
+   * Append one failed seed attempt to the durable queue — unless a
+   * near-identical entry is already pending. Without this, an outage during
+   * a scroll-heavy session queues every surviving (post-dedup) event
+   * individually, then replays all of them the moment PiecesOS comes back —
+   * a delayed flood rather than a prevented one.
+   */
   async enqueue(bodyText: string, title: string): Promise<void> {
     await mkdir(dirname(this.queuePath), { recursive: true });
+    const hash = createHash("sha256").update(bodyText).digest("hex");
+    const entries = await this.readAll();
+    if (entries.some((e) => createHash("sha256").update(e.bodyText).digest("hex") === hash)) {
+      return;
+    }
     const entry: PendingSeed = { bodyText, title, queuedAt: new Date().toISOString(), attempts: 0 };
-    await appendFile(this.queuePath, JSON.stringify(entry) + "\n", "utf-8");
+    await this.writeAll([...entries, entry]);
   }
 
   private async readAll(): Promise<PendingSeed[]> {

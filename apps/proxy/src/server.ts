@@ -6,6 +6,7 @@ import { findAllowedRoute } from "@pieces-android/allowlist";
 import { isValidBearerToken } from "./auth.js";
 import { summarizeTelemetry, seedToPiecesOS, TelemetryEvent } from "./seeder.js";
 import { SeedQueue } from "./seed-queue.js";
+import { shouldSeed } from "./surprisal.js";
 import { MemoryClient } from "mem0ai";
 
 // Mem0 integration is optional — most PiecesOS users won't have an account.
@@ -167,20 +168,53 @@ const server = createServer(async (req, res) => {
       const lines = (events as any[]).map((e) => JSON.stringify(e)).join("\n") + "\n";
       await appendFile(USAGE_LOG_PATH, lines, "utf-8");
       
-      // Attempt to seed telemetry directly into Pieces OS desktop & Mem0
-      for (const e of (events as TelemetryEvent[])) {
-        if (e.type === "system_telemetry") {
-          const bodyText = summarizeTelemetry(e);
-          const title = `Android Context: System Telemetry`;
-          
-          await addToMem0(bodyText);
+      // Batch consecutive same-package system_telemetry events in this
+      // request into a single seed instead of one seed call per event — a
+      // scroll-heavy burst that survives client-side dedup previously wrote
+      // to both Mem0 and PiecesOS once per surviving event.
+      //
+      // The Android package name isn't a separate field on the event — it's
+      // embedded as "Package: <name>\n\n<text>" inside `telemetry` (see
+      // Status.tsx's passiveCapture handler) — so it's extracted from there.
+      const packageOf = (e: TelemetryEvent): string => {
+        const match = /^Package:\s*(\S+)/.exec(e.telemetry ?? "");
+        return match ? match[1] : "unknown";
+      };
 
-          try {
-            await seedToPiecesOS(PIECES_BASE_URL, bodyText, title);
-          } catch (err) {
-            console.warn("PiecesOS not reachable for seeding; queued for retry.", err);
-            await seedQueue.enqueue(bodyText, title);
-          }
+      const telemetryEvents = (events as TelemetryEvent[]).filter((e) => e.type === "system_telemetry");
+      const batches: TelemetryEvent[][] = [];
+      for (const e of telemetryEvents) {
+        const last = batches[batches.length - 1];
+        if (last && packageOf(last[0]) === packageOf(e)) {
+          last.push(e);
+        } else {
+          batches.push([e]);
+        }
+      }
+
+      for (const batch of batches) {
+        const packageName = packageOf(batch[0]);
+        const bodyText =
+          batch.length === 1
+            ? summarizeTelemetry(batch[0])
+            : batch.map((e) => summarizeTelemetry(e)).join("\n\n===\n\n");
+        const title =
+          batch.length === 1
+            ? "Android Context: System Telemetry"
+            : `Android Context: System Telemetry (${batch.length} events batched)`;
+
+        // Surprisal gate: skip seeding near-duplicate/unsurprising content.
+        // Fails open (see surprisal.ts) — never a silent data-loss path.
+        const novel = await shouldSeed(packageName, bodyText);
+        if (!novel) continue;
+
+        await addToMem0(bodyText);
+
+        try {
+          await seedToPiecesOS(PIECES_BASE_URL, bodyText, title);
+        } catch (err) {
+          console.warn("PiecesOS not reachable for seeding; queued for retry.", err);
+          await seedQueue.enqueue(bodyText, title);
         }
       }
 

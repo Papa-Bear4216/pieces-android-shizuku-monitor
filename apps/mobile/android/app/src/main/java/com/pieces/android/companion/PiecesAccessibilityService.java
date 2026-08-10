@@ -8,7 +8,11 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import java.security.MessageDigest;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -24,10 +28,21 @@ public class PiecesAccessibilityService extends AccessibilityService {
     // considering a push. Avoids firing on every keystroke/scroll.
     private static final long DEBOUNCE_MS = 2000;
 
+    // Bounds on extractText: without these, a deeply nested or huge webview
+    // tree produces an unbounded string that gets hashed and pushed whole.
+    private static final int MAX_NODE_DEPTH = 40;
+    private static final int MAX_TEXT_CHARS = 20_000;
+
+    // How many recent (package, hash) pushes to remember per debounce cycle.
+    // A single "last pushed" value is defeated by flicker between two states
+    // (e.g. bouncing between two scroll positions); a small ring buffer
+    // catches repeats within a short recent window instead of just the
+    // immediately-previous one.
+    private static final int DEDUPE_HISTORY_SIZE = 15;
+
     private final Handler debounceHandler = new Handler(Looper.getMainLooper());
     private Runnable pendingPush;
-    private String lastPushedText = "";
-    private String lastPushedPackage = "";
+    private final Deque<String> recentPushHashes = new ArrayDeque<>(DEDUPE_HISTORY_SIZE);
 
     // Set by AccessibilityPlugin when the JS layer wants passive-mode pushes
     // delivered as they're debounced, instead of only on-demand via
@@ -59,7 +74,7 @@ public class PiecesAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo rootNode = event.getSource();
         List<String> extractedTexts = new ArrayList<>();
         try {
-            extractText(rootNode, extractedTexts);
+            extractText(rootNode, extractedTexts, 0, new int[]{0});
         } finally {
             rootNode.recycle();
         }
@@ -77,15 +92,45 @@ public class PiecesAccessibilityService extends AccessibilityService {
     private void scheduleDebouncedPush(String packageName, String text) {
         if (pendingPush != null) debounceHandler.removeCallbacks(pendingPush);
         pendingPush = () -> {
-            // Dedupe: skip if identical to the last thing we actually pushed,
-            // so a static/unchanging screen doesn't repeat-fire every DEBOUNCE_MS.
-            if (text.equals(lastPushedText) && packageName.equals(lastPushedPackage)) return;
-            lastPushedText = text;
-            lastPushedPackage = packageName;
+            // Dedupe against a normalized hash rather than the raw string, and
+            // against a small recent-history window rather than only the last
+            // push — scrolling shifts whitespace/ordering without changing
+            // content, and flicker between two states defeats a single-value
+            // comparison.
+            String hash = normalizedHash(packageName, text);
+            if (recentPushHashes.contains(hash)) return;
+            recentPushHashes.addLast(hash);
+            while (recentPushHashes.size() > DEDUPE_HISTORY_SIZE) recentPushHashes.removeFirst();
+
             PassiveCaptureListener listener = passiveListener;
             if (listener != null) listener.onCapture(packageName, text);
         };
         debounceHandler.postDelayed(pendingPush, DEBOUNCE_MS);
+    }
+
+    // Collapses whitespace and sorts text nodes so that content re-ordering
+    // (e.g. list items shifting position during scroll) doesn't produce a
+    // different hash for what is semantically the same screen content.
+    private static String normalizedHash(String packageName, String text) {
+        String[] lines = text.split("\n");
+        for (int i = 0; i < lines.length; i++) {
+            lines[i] = lines[i].trim().replaceAll("\\s+", " ");
+        }
+        Arrays.sort(lines);
+        String normalized = packageName + "|" + String.join("\n", lines);
+
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = digest.digest(normalized.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hashBytes) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception e) {
+            // SHA-256 is guaranteed available on Android; this is unreachable
+            // in practice. Fall back to the normalized string itself so
+            // dedup still functions rather than throwing.
+            return normalized;
+        }
     }
 
     private boolean isLocked() {
@@ -115,19 +160,26 @@ public class PiecesAccessibilityService extends AccessibilityService {
         return allowlist.contains(packageName);
     }
 
-    private void extractText(AccessibilityNodeInfo node, List<String> texts) {
-        if (node == null) return;
+    // depth and charBudget[0] bound worst-case cost against deeply nested or
+    // huge trees (e.g. a long webview) — without this, extractText has no
+    // limit on recursion depth or total captured text size.
+    private void extractText(AccessibilityNodeInfo node, List<String> texts, int depth, int[] charBudget) {
+        if (node == null || depth > MAX_NODE_DEPTH || charBudget[0] >= MAX_TEXT_CHARS) return;
 
         if (node.getText() != null && node.getText().length() > 0) {
-            texts.add(node.getText().toString());
+            String value = node.getText().toString();
+            texts.add(value);
+            charBudget[0] += value.length();
         }
         if (node.getContentDescription() != null && node.getContentDescription().length() > 0) {
-            texts.add(node.getContentDescription().toString());
+            String value = node.getContentDescription().toString();
+            texts.add(value);
+            charBudget[0] += value.length();
         }
 
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
-            extractText(child, texts);
+            extractText(child, texts, depth + 1, charBudget);
             if (child != null) child.recycle();
         }
     }
