@@ -4,6 +4,7 @@ import { getStatus, ProxyNotConfiguredError, HomeNodeUnreachableError } from "..
 import { recordEvent } from "../lib/usage";
 import { flushUsageEvents } from "../lib/flush";
 import { isShizukuToolkitEnabled, isScreenContextEnabled } from "../lib/config";
+import { onPassiveCapture, getLastPassiveCapture, startPassiveCaptureListener } from "../lib/passiveCapture";
 import { registerPlugin } from "@capacitor/core";
 
 const ShizukuMonitor = registerPlugin<any>('ShizukuMonitor');
@@ -38,7 +39,7 @@ export default function Status() {
   const [passiveMode, setPassiveMode] = useState(false);
   const [passiveConfirmText, setPassiveConfirmText] = useState("");
   const [showPassiveConfirm, setShowPassiveConfirm] = useState(false);
-  const [lastPassiveCapture, setLastPassiveCapture] = useState<{ pkg: string; at: string } | null>(null);
+  const [lastPassiveCapture, setLastPassiveCapture] = useState<{ pkg: string; at: string } | null>(getLastPassiveCapture());
 
   async function load() {
     setState({ kind: "loading" });
@@ -64,22 +65,10 @@ export default function Status() {
     recordEvent({ type: "screen_view", screen: "status", timestamp: new Date().toISOString() });
     flushUsageEvents();
 
-    // Passive captures arrive here already debounced/deduped on the Java
-    // side (PiecesAccessibilityService) — this just forwards each one into
-    // the same usage-event pipeline as a manual "Scan Screen Text" tap.
-    const listenerHandle = AccessibilityScanner.addListener("passiveCapture", async (data: { package: string; textNodes: string }) => {
-      const timestamp = new Date().toISOString();
-      await recordEvent({
-        type: "system_telemetry",
-        screen: "background",
-        telemetry: `Package: ${data.package}\n\n${data.textNodes}`,
-        timestamp,
-      });
-      await flushUsageEvents();
-      setLastPassiveCapture({ pkg: data.package, at: timestamp });
-    });
-
-    return () => { listenerHandle.remove(); };
+    // The actual passive-capture listener is registered app-wide in
+    // App.tsx (so it keeps running regardless of which screen is open) —
+    // this just subscribes to it for the "Last passive capture" display.
+    return onPassiveCapture((capture) => setLastPassiveCapture(capture));
   }, []);
 
   async function handleTogglePassiveMode(next: boolean) {
@@ -98,6 +87,10 @@ export default function Status() {
     setPassiveMode(true);
     setShowPassiveConfirm(false);
     setPassiveConfirmText("");
+    // Covers turning passive mode on mid-session, when App.tsx's startup
+    // check already ran and found it off — startPassiveCaptureListener is a
+    // no-op if App.tsx already started it.
+    startPassiveCaptureListener();
     await AccessibilityScanner.setPassiveModeEnabled({ enabled: true });
   }
 

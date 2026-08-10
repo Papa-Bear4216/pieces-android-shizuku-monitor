@@ -5,7 +5,8 @@ import Status from "./pages/Status";
 import Ask from "./pages/Ask";
 import Recent from "./pages/Recent";
 import { flushUsageEvents } from "./lib/flush";
-import { isShizukuToolkitEnabled } from "./lib/config";
+import { isShizukuToolkitEnabled, isScreenContextEnabled } from "./lib/config";
+import { startPassiveCaptureListener } from "./lib/passiveCapture";
 import { registerPlugin, Capacitor } from "@capacitor/core";
 
 const ShizukuMonitor = registerPlugin<any>('ShizukuMonitor');
@@ -43,6 +44,17 @@ export default function App() {
       }
     }
     if (Capacitor.isNativePlatform()) checkShizuku();
+
+    // Registered here (app-lifetime), not in Status.tsx (screen-lifetime) —
+    // a listener tied to a screen's mount only receives events while that
+    // screen happens to be open, defeating passive mode's entire purpose of
+    // capturing in the background regardless of which tab is visible. Gated
+    // on screen context being enabled at all, same as the native service's
+    // own check, so this doesn't register a no-op listener for users who
+    // never opted in.
+    isScreenContextEnabled().then((enabled) => {
+      if (enabled && Capacitor.isNativePlatform()) startPassiveCaptureListener();
+    });
 
     // Backstop flush for events queued during a long session on one screen
     // (e.g. repeated searches without navigating away) — per-screen mount
