@@ -311,6 +311,15 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`proxying to PiecesOS at ${PIECES_BASE_URL}`);
 });
 
+// A client disconnecting mid-request (flaky WiFi, phone sleep, app backgrounded)
+// throws ECONNRESET from inside Node's HTTP internals — outside any try/catch
+// in our own request handler. Left uncaught, this kills the whole process, so
+// the proxy has been silently dying under completely normal phone network
+// flakiness rather than staying up like a long-running service should.
+process.on("uncaughtException", (err) => {
+  console.error("[proxy] uncaught exception (ignoring, staying alive):", err);
+});
+
 // Also drain once on startup — covers the case where the proxy itself was
 // down (not just PiecesOS) and items piled up while nothing was retrying.
 seedQueue.drain().catch((err) => console.warn("[seed-queue] initial drain failed", err));
