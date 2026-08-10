@@ -26,6 +26,7 @@ async function addToMem0(content: string) {
 }
 
 const UPSTREAM_TIMEOUT_MS = 5000;
+const ASSETS_TIMEOUT_MS = 20000;
 
 // Deliberately outside the repo (which lives under OneDrive) — this file can
 // contain real query/question text and must never be committed or synced.
@@ -288,7 +289,13 @@ const server = createServer(async (req, res) => {
   try {
     const target = new URL(route.piecesPath, PIECES_BASE_URL);
     target.search = url.search;
-    const piecesRes = await fetch(target, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
+    // /assets does a real store scan and can legitimately take several
+    // seconds on a non-trivial asset count — 5s was tight enough to
+    // routinely time out a request PiecesOS was about to complete
+    // successfully (observed: consistent ~5.3s, PiecesOS itself returning
+    // 200). Other routes stay on the tighter default.
+    const timeoutMs = route.piecesPath === "/assets" ? ASSETS_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
+    const piecesRes = await fetch(target, { signal: AbortSignal.timeout(timeoutMs) });
     const text = await piecesRes.text();
     res.writeHead(piecesRes.status, {
       "Content-Type": piecesRes.headers.get("content-type") ?? "application/json",

@@ -12,7 +12,11 @@ const HOME_PROXY_BASE_URL = process.env.HOME_PROXY_BASE_URL;
 // remote host's compose env only.
 const HOME_PROXY_TOKEN = process.env.HOME_PROXY_TOKEN;
 const JWT_SECRET = process.env.GATEWAY_JWT_SECRET;
-const UPSTREAM_TIMEOUT_MS = 5000;
+// The Plan A proxy itself allows up to 20s for /assets (a real DB scan that
+// can legitimately take several seconds) — this gateway sits in front of it
+// and must allow at least as long, or it kills a request the proxy was
+// about to complete successfully.
+const UPSTREAM_TIMEOUT_MS = 20000;
 
 if (!JWT_SECRET) {
   console.error("GATEWAY_JWT_SECRET is not set. Refusing to start.");
