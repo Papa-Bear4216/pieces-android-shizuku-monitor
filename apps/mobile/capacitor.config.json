@@ -1,5 +1,8 @@
 {
   "appId": "com.pieces.android.companion",
   "appName": "Pieces Companion",
-  "webDir": "dist"
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "http"
+  }
 }
