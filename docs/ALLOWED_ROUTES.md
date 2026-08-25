@@ -214,3 +214,62 @@ model, so the same Setup screen works for either by just pointing at a different
 address/token. What did need updating: Setup's copy (now describes both LAN and remote
 modes) and a new `HomeNodeUnreachableError` in `apps/mobile/src/lib/api.ts` so a 503 shows
 as "home PC offline" instead of a generic error.
+
+## Ask root cause: Pieces cloud account, not this repo (confirmed 2026-08-21, reconfirmed live 2026-08-25)
+
+Salvaged from an unpushed commit on a leftover standalone copy of this app
+(`pieces-android-companion`, since deleted) before that folder was removed — the
+investigation and conclusion below are real and still hold.
+
+`GET /models` on this PiecesOS install returns 99 models, 71 `cloud:true`, and **every
+one shows `downloaded:false`** — there is no working generation backend, cloud or local.
+`POST /model/{id}/download` and `POST /model/{id}/load` both return 200 but never flip
+`downloaded` to `true` for a cloud model. Live `ws://127.0.0.1:39300/qgpt/stream` with an
+explicit model id fails with a bare `"InternalServerError"` once past the "model not
+found" stage — a genuine server-side failure, not a request-shape problem on this repo's
+side.
+
+`GET /user`'s `allocation.urls` block is the actual root cause:
+```
+"urls": {
+  "base":   { "status": "RUNNING", "url": "https://user-<id>-....run.app" },
+  "id":     { "status": "FAILED",  "url": "https://<id>.pieces.cloud" },
+  "vanity": { "status": "FAILED",  "url": "https://dysfunctionjunction.pieces.cloud" }
+}
+```
+Two of three cloud allocation endpoints are stuck `FAILED`; only `base` is `RUNNING`.
+Reconfirmed live on 2026-08-25 — same two endpoints still `FAILED`, `updated` timestamp
+shows the account state is actively synced (not a stale cache), so this has not
+self-resolved in the four days since.
+
+**Do not build a workaround for this in this repo.** `PiecesClient.ask()` already does
+the correct thing — surfaces a typed `"unavailable"` result with a clear reason instead
+of hanging or crashing — and that behavior is correct regardless of whether any given
+install has working cloud allocation. Fixing Ask for real means fixing the account's
+cloud provisioning (Pieces Desktop → account/cloud sync, or Pieces support), not
+patching the proxy, gateway, or mobile app.
+
+## WorkstreamEvent write path added (2026-08-25)
+
+`POST /workstream_events/create` is a real, live endpoint on this PiecesOS install
+(12.6.1) — confirmed by testing directly, not just reading the vendored
+`@pieces.app/pieces-os-client@4.1.0` SDK. The SDK's `WorkstreamEventsApi` wraps the body
+as `{ seededWorkstreamEvent: {...} }`, but that shape 500s against the real server
+("WorkstreamEvent create body failed fromJson") — the correct body is flat:
+
+```
+POST /workstream_events/create
+{
+  "application": { ...same shape /connect returns... },
+  "trigger": { "checkIn": true },
+  "readable": "<the actual text content>"
+}
+```
+
+This is a separate store from assets — confirmed live, 2,495+ pre-existing native
+workstream events (calendar, IDE, browser activity) with zero overlap with the assets
+list. Assets are searchable via `/qgpt/relevance` but don't feed PiecesOS's own
+timeline/rollup generation; workstream events do. `seedWorkstreamEvent()` in
+`apps/proxy/src/seeder.ts` writes to this endpoint alongside (not instead of) the
+existing asset write in `seedToPiecesOS()`, reusing the same cached `/connect`
+application context (see `getApplication()` in the same file).

@@ -13,7 +13,7 @@ export type UsageEvent =
   | { type: "search"; screen: "recent"; query: string; resultCount: number; mode: "relevant" | "text" | "text-fallback"; timestamp: string }
   | { type: "screen_view"; screen: "setup" | "status" | "recent" | "ask"; timestamp: string }
   | { type: "setup_saved"; screen: "setup"; mode: "lan" | "remote"; timestamp: string }
-  | { type: "system_telemetry"; screen: "background"; telemetry: string; timestamp: string };
+  | { type: "system_telemetry"; screen: "background"; telemetry: string; package?: string; timestamp: string };
 
 async function readQueue(): Promise<UsageEvent[]> {
   const { value } = await Preferences.get({ key: QUEUE_KEY });

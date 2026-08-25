@@ -18,17 +18,42 @@ export class HomeNodeUnreachableError extends Error {
   }
 }
 
+// The proxy/gateway enforce their own 5s upstream timeout and return 503 when
+// PiecesOS is unreachable — but that only helps once our request actually
+// reaches them. A stalled TCP handshake or dropped packet on the phone's own
+// network never gets a response at all, so fetch() hangs indefinitely with
+// no client-side abort. This client-side timeout ensures every call fails
+// closed instead of leaving the UI stuck on "Checking…" forever.
+const CLIENT_FETCH_TIMEOUT_MS = 10000;
+// /mobile/recent/assets proxies to PiecesOS's /assets, which the proxy itself
+// allows up to 30s for (a real store scan on a non-trivial asset count is
+// legitimately slow — see ASSETS_TIMEOUT_MS in apps/proxy/src/server.ts).
+// The client timeout must exceed that, or it aborts requests the server was
+// still on track to complete successfully.
+const ASSETS_CLIENT_FETCH_TIMEOUT_MS = 35000;
+
 async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
   const [baseUrl, token] = await Promise.all([getProxyBaseUrl(), getProxyToken()]);
   if (!baseUrl || !token) throw new ProxyNotConfiguredError();
 
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      ...init?.headers,
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  const timeoutMs = path.startsWith("/mobile/recent/assets") ? ASSETS_CLIENT_FETCH_TIMEOUT_MS : CLIENT_FETCH_TIMEOUT_MS;
+
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers: {
+        ...init?.headers,
+        Authorization: `Bearer ${token}`,
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new HomeNodeUnreachableError("Request timed out reaching the proxy.");
+    }
+    throw err;
+  }
 
   if (res.status === 503) {
     const body = await res.json().catch(() => null);
@@ -59,7 +84,9 @@ export type AskResult =
 /** Unauthenticated liveness check — safe to call before Setup is complete. */
 export async function checkProxyHealth(baseUrl: string): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/mobile/health`);
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/mobile/health`, {
+      signal: AbortSignal.timeout(CLIENT_FETCH_TIMEOUT_MS),
+    });
     if (!res.ok) return false;
     const body = await res.json();
     return body?.ok === true;
@@ -96,12 +123,26 @@ export async function getRecentAssets(): Promise<AssetSummary[]> {
   if (!res.ok) throw new Error(`Recent assets failed: HTTP ${res.status}`);
   const body = await res.json();
   const iterable = Array.isArray(body?.iterable) ? body.iterable : [];
-  return iterable.map((a: Record<string, any>) => ({
-    id: a.id,
-    name: a.name,
-    created: a.created?.readable ?? a.created?.value ?? "",
-    updated: a.updated?.readable ?? a.updated?.value ?? "",
-  }));
+  // PiecesOS's /assets was observed returning oldest-first (confirmed live:
+  // first item was 15 days old, last item was seconds old) — but that's
+  // positional order, not a documented contract. Sorting explicitly by
+  // created.value (an ISO timestamp, sorts correctly as a string) instead of
+  // just reversing means this stays correct even if PiecesOS's ordering ever
+  // changes, rather than silently flipping back to oldest-first again with
+  // no visible symptom until someone happens to notice.
+  return iterable
+    .slice()
+    .sort((a: Record<string, any>, b: Record<string, any>) => {
+      const aTime = a.created?.value ?? "";
+      const bTime = b.created?.value ?? "";
+      return bTime.localeCompare(aTime);
+    })
+    .map((a: Record<string, any>) => ({
+      id: a.id,
+      name: a.name,
+      created: a.created?.readable ?? a.created?.value ?? "",
+      updated: a.updated?.readable ?? a.updated?.value ?? "",
+    }));
 }
 
 export async function searchAssets(query: string): Promise<AssetSummary[]> {

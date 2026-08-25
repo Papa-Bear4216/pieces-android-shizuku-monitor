@@ -1,14 +1,21 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { seedToPiecesOS } from "./seeder.js";
+import { seedToPiecesOS, seedWorkstreamEvent } from "./seeder.js";
 
 // Durable store for telemetry that failed to seed into PiecesOS (e.g. it was
 // restarting or unreachable) — separate from USAGE_LOG_PATH, which is a
 // permanent audit trail and never drained. This file only holds items still
-// awaiting a successful seed; entries are removed once seedToPiecesOS
-// succeeds so it doesn't grow without bound while PiecesOS is up.
-type PendingSeed = { bodyText: string; title: string; queuedAt: string; attempts: number };
+// awaiting a successful seed; entries are removed once the seed succeeds so
+// it doesn't grow without bound while PiecesOS is up.
+//
+// `kind` covers both write targets this proxy seeds into PiecesOS (assets
+// and workstream events) so a failed write of either type gets the same
+// durable-retry guarantee, instead of only assets having one. `title` is
+// asset-only (workstream events have no title field) and is optional so
+// existing on-disk queue entries from before this field existed still parse
+// — they default to "asset" via the `?? "asset"` fallback in drain().
+type PendingSeed = { kind?: "asset" | "workstream_event"; bodyText: string; title?: string; queuedAt: string; attempts: number };
 
 const RETRY_INTERVAL_MS = 30_000;
 const MAX_ATTEMPTS = 50; // ~25 minutes of retrying before giving up on an item
@@ -30,14 +37,19 @@ export class SeedQueue {
    * individually, then replays all of them the moment PiecesOS comes back —
    * a delayed flood rather than a prevented one.
    */
-  async enqueue(bodyText: string, title: string): Promise<void> {
+  async enqueue(bodyText: string, title: string, kind: "asset" | "workstream_event" = "asset"): Promise<void> {
     await mkdir(dirname(this.queuePath), { recursive: true });
     const hash = createHash("sha256").update(bodyText).digest("hex");
     const entries = await this.readAll();
-    if (entries.some((e) => createHash("sha256").update(e.bodyText).digest("hex") === hash)) {
+    // Same bodyText can legitimately be queued once per kind (the asset
+    // write and the workstream-event write for the same capture can fail
+    // independently — one succeeding shouldn't suppress retrying the other),
+    // so the near-duplicate check is scoped to matching kind, not bodyText
+    // alone.
+    if (entries.some((e) => (e.kind ?? "asset") === kind && createHash("sha256").update(e.bodyText).digest("hex") === hash)) {
       return;
     }
-    const entry: PendingSeed = { bodyText, title, queuedAt: new Date().toISOString(), attempts: 0 };
+    const entry: PendingSeed = { kind, bodyText, title, queuedAt: new Date().toISOString(), attempts: 0 };
     await this.writeAll([...entries, entry]);
   }
 
@@ -81,7 +93,11 @@ export class SeedQueue {
 
       for (const entry of entries) {
         try {
-          await seedToPiecesOS(this.piecesBaseUrl, entry.bodyText, entry.title);
+          if ((entry.kind ?? "asset") === "workstream_event") {
+            await seedWorkstreamEvent(this.piecesBaseUrl, entry.bodyText);
+          } else {
+            await seedToPiecesOS(this.piecesBaseUrl, entry.bodyText, entry.title ?? "Android Context: System Telemetry");
+          }
           succeeded++;
         } catch {
           const attempts = entry.attempts + 1;

@@ -25,7 +25,7 @@ import { createHash } from "node:crypto";
 // silently drop real data when its dependency is down.
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_SURPRISAL_MODEL ?? "gemma4";
+const OLLAMA_MODEL = process.env.OLLAMA_SURPRISAL_MODEL ?? "nomic-embed-text";
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 3000);
 
 // Cosine similarity above this to any recent same-package embedding is

@@ -74,7 +74,7 @@ public class PiecesAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo rootNode = event.getSource();
         List<String> extractedTexts = new ArrayList<>();
         try {
-            extractText(rootNode, extractedTexts, 0, new int[]{0});
+            extractText(rootNode, extractedTexts, 0, new int[]{0}, new boolean[]{false});
         } finally {
             rootNode.recycle();
         }
@@ -155,6 +155,10 @@ public class PiecesAccessibilityService extends AccessibilityService {
     // from apps the user actually opted into."
     private boolean isAllowed(String packageName) {
         if (packageName.isEmpty()) return false;
+        // Hard denylist enforced independently of the user's saved allowlist —
+        // see AccessibilityPlugin.isExcluded's comment for why this can't just
+        // rely on the picker having filtered these out already.
+        if (AccessibilityPlugin.isExcluded(packageName)) return false;
         SharedPreferences prefs = getSharedPreferences(AccessibilityPlugin.PREFS_NAME, MODE_PRIVATE);
         Set<String> allowlist = prefs.getStringSet(AccessibilityPlugin.ALLOWLIST_KEY, new HashSet<>());
         return allowlist.contains(packageName);
@@ -163,23 +167,37 @@ public class PiecesAccessibilityService extends AccessibilityService {
     // depth and charBudget[0] bound worst-case cost against deeply nested or
     // huge trees (e.g. a long webview) — without this, extractText has no
     // limit on recursion depth or total captured text size.
-    private void extractText(AccessibilityNodeInfo node, List<String> texts, int depth, int[] charBudget) {
+    //
+    // Each captured string is tagged with a coarse role so the server side
+    // (summarizeTelemetry) can build a structured block instead of a flat
+    // dump. Role is inferred from what AccessibilityNodeInfo actually
+    // exposes — there's no true "screen title" API, so the heuristic is:
+    // the first non-clickable text encountered (shallow, tree-walk order)
+    // is the title; anything clickable is a button; everything else is
+    // plain text. Format: "role|text", one per line — '|' is not filtered
+    // out of user text, so downstream parsing only trusts the first '|'.
+    private void extractText(AccessibilityNodeInfo node, List<String> texts, int depth, int[] charBudget, boolean[] titleFound) {
         if (node == null || depth > MAX_NODE_DEPTH || charBudget[0] >= MAX_TEXT_CHARS) return;
+
+        boolean clickable = node.isClickable();
 
         if (node.getText() != null && node.getText().length() > 0) {
             String value = node.getText().toString();
-            texts.add(value);
+            String role = clickable ? "button" : (!titleFound[0] ? "title" : "text");
+            if (role.equals("title")) titleFound[0] = true;
+            texts.add(role + "|" + value);
             charBudget[0] += value.length();
         }
         if (node.getContentDescription() != null && node.getContentDescription().length() > 0) {
             String value = node.getContentDescription().toString();
-            texts.add(value);
+            String role = clickable ? "button" : "text";
+            texts.add(role + "|" + value);
             charBudget[0] += value.length();
         }
 
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
-            extractText(child, texts, depth + 1, charBudget);
+            extractText(child, texts, depth + 1, charBudget, titleFound);
             if (child != null) child.recycle();
         }
     }

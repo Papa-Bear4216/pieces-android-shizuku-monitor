@@ -62,6 +62,11 @@ export default function Status() {
     isShizukuToolkitEnabled().then(setToolkitEnabled);
     isScreenContextEnabled().then(setContextEnabled);
     AccessibilityScanner.getPassiveModeEnabled().then((r: any) => setPassiveMode(r.enabled));
+    // Load the real saved allowlist on mount — without this, allowlist stays
+    // the empty Set() default until the user opens the app picker at least
+    // once this session, wrongly disabling Scan Screen Text / Passive mode
+    // even when a real allowlist is already saved natively.
+    AccessibilityScanner.getAllowlist().then(({ packages }: { packages: string[] }) => setAllowlistState(new Set(packages)));
     recordEvent({ type: "screen_view", screen: "status", timestamp: new Date().toISOString() });
     flushUsageEvents();
 
@@ -160,6 +165,7 @@ export default function Status() {
           type: "system_telemetry",
           screen: "background",
           telemetry: `Package: ${res.package}\n\n${res.textNodes}`,
+          package: res.package,
           timestamp: new Date().toISOString(),
         });
         await flushUsageEvents();

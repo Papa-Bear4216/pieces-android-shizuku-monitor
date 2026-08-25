@@ -37,6 +37,7 @@ export function startPassiveCaptureListener(): void {
       type: "system_telemetry",
       screen: "background",
       telemetry: `Package: ${data.package}\n\n${data.textNodes}`,
+      package: data.package,
       timestamp,
     });
     await flushUsageEvents();

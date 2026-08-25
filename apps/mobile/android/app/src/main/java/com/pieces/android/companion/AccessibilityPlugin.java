@@ -95,8 +95,53 @@ public class AccessibilityPlugin extends Plugin {
         "com.tumblr"
     );
 
-    private boolean isExcluded(String packageName) {
+    // Excluded from the app picker for a different reason than EXCLUDED_PREFIXES —
+    // not privacy-sensitive, just useless signal. Keyboards emit one node per
+    // keypress, system UI/launcher churn constantly with clock/battery/notification
+    // text, and OEM/carrier services have no user-facing screen worth capturing.
+    // Keeping this list separate from the privacy one lets each be audited for its
+    // own reason independently.
+    private static final List<String> EXCLUDED_NOISE_PREFIXES = Arrays.asList(
+        // Keyboards / input methods
+        "com.samsung.android.honeyboard",
+        "com.google.android.inputmethod",
+        "com.touchtype.swiftkey",
+        "com.google.android.googlequicksearchbox", // includes Gboard voice/assistant surface
+        // System UI / launcher / shell chrome
+        "com.android.systemui",
+        "com.sec.android.app.launcher",
+        "com.google.android.apps.nexuslauncher",
+        "com.android.settings",
+        "com.samsung.android.app.settings",
+        "com.android.launcher3",
+        "com.google.android.permissioncontroller",
+        "com.android.permissioncontroller",
+        // OEM/carrier background services with no meaningful on-screen text
+        "com.samsung.android.mdecservice",
+        "com.samsung.android.dqagent",
+        "com.samsung.android.game.gametools",
+        "com.wssyncmldm",             // carrier device-management
+        "com.sec.android.diagmonagent",
+        "com.samsung.android.sm",     // Samsung Device Care
+        "com.android.providers",      // content providers, no UI
+        "com.google.android.gms",     // Play Services background surface
+        "com.google.android.packageinstaller",
+        "com.android.packageinstaller"
+    );
+
+    // static + package-visible so PiecesAccessibilityService.isAllowed can
+    // enforce this same denylist independently of the allowlist it reads
+    // from SharedPreferences — that allowlist has no built-in cross-check
+    // against these lists (it's user-editable, opt-in state, not a fixed
+    // ruleset), so without this call, a sensitive/noise package that ever
+    // ends up in the saved allowlist (a picker bug, a manually-edited prefs
+    // file, an app id reused by a different vendor over time) would be
+    // captured with nothing to stop it.
+    static boolean isExcluded(String packageName) {
         for (String prefix : EXCLUDED_PREFIXES) {
+            if (packageName.startsWith(prefix)) return true;
+        }
+        for (String prefix : EXCLUDED_NOISE_PREFIXES) {
             if (packageName.startsWith(prefix)) return true;
         }
         return false;

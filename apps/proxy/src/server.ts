@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { PiecesClient } from "@pieces-android/pieces-api";
 import { findAllowedRoute } from "@pieces-android/allowlist";
 import { isValidBearerToken } from "./auth.js";
-import { summarizeTelemetry, seedToPiecesOS, TelemetryEvent } from "./seeder.js";
+import { summarizeTelemetry, seedToPiecesOS, seedWorkstreamEvent, TelemetryEvent } from "./seeder.js";
 import { SeedQueue } from "./seed-queue.js";
 import { shouldSeed } from "./surprisal.js";
 import { MemoryClient } from "mem0ai";
@@ -26,13 +26,25 @@ async function addToMem0(content: string) {
 }
 
 const UPSTREAM_TIMEOUT_MS = 5000;
-const ASSETS_TIMEOUT_MS = 20000;
+// PiecesOS's /assets does a real store scan that scales with asset count —
+// measured directly at 13s against PiecesOS with 276 assets (was ~5.3s when
+// this was first raised at a lower asset count). 20s started timing out in
+// practice through the full phone->proxy->PiecesOS->proxy->phone round trip
+// even though a direct PiecesOS call finished under it — raised with margin
+// rather than tuned to today's exact count, since this list only grows.
+const ASSETS_TIMEOUT_MS = 30000;
 
 // Deliberately outside the repo (which lives under OneDrive) — this file can
 // contain real query/question text and must never be committed or synced.
 const USAGE_LOG_PATH =
   process.env.USAGE_LOG_PATH ?? `${process.env.USERPROFILE ?? process.env.HOME}\\.claude\\pieces-usage-log.jsonl`;
 const MAX_EVENTS_PER_BATCH = 500;
+// Guards against a pathological batch (500 events each carrying a large
+// text-node dump — a webview or scrollable list can produce tens of KB per
+// event) stalling the proxy on body accumulation before the event-count
+// check even runs. 10MB comfortably covers 500 realistic telemetry events
+// (each capped at MAX_TEXT_CHARS=20,000 chars natively) with headroom.
+const MAX_USAGE_REPORT_BODY_BYTES = 10 * 1024 * 1024;
 
 const PORT = Number(process.env.PROXY_PORT ?? 8787);
 const PIECES_BASE_URL = process.env.PIECES_BASE_URL ?? "http://127.0.0.1:39300";
@@ -118,7 +130,13 @@ const server = createServer(async (req, res) => {
       return;
     }
     
-    await addToMem0(query);
+    // Same novelty gate the telemetry path uses, so every Mem0 write goes
+    // through one consistent dedup rule instead of ask queries bypassing it.
+    // Fixed bucket key since queries aren't tied to an Android package.
+    const novel = await shouldSeed("__ask_queries__", query);
+    if (novel) {
+      await addToMem0(query);
+    }
 
     const result = await pieces.ask(query);
     sendJson(res, 200, result);
@@ -148,7 +166,19 @@ const server = createServer(async (req, res) => {
   // mobile paths to PiecesOS paths, and this route has no PiecesOS counterpart.
   if (method === "POST" && url.pathname === "/mobile/usage-report") {
     let body = "";
-    for await (const chunk of req) body += chunk;
+    let bodyTooLarge = false;
+    for await (const chunk of req) {
+      body += chunk;
+      if (Buffer.byteLength(body) > MAX_USAGE_REPORT_BODY_BYTES) {
+        bodyTooLarge = true;
+        break;
+      }
+    }
+    if (bodyTooLarge) {
+      req.destroy();
+      sendJson(res, 413, { error: `request body too large (max ${MAX_USAGE_REPORT_BODY_BYTES} bytes)` });
+      return;
+    }
     let events: unknown;
     try {
       events = JSON.parse(body)?.events;
@@ -174,10 +204,13 @@ const server = createServer(async (req, res) => {
       // scroll-heavy burst that survives client-side dedup previously wrote
       // to both Mem0 and PiecesOS once per surviving event.
       //
-      // The Android package name isn't a separate field on the event — it's
-      // embedded as "Package: <name>\n\n<text>" inside `telemetry` (see
-      // Status.tsx's passiveCapture handler) — so it's extracted from there.
+      // `package` is a first-class field on newer clients (passiveCapture.ts,
+      // Status.tsx's manual scan). Older/not-yet-updated clients only embed
+      // it as "Package: <name>\n\n<text>" inside `telemetry` — kept as a
+      // fallback so this doesn't regress for anyone running a not-yet-rebuilt
+      // APK.
       const packageOf = (e: TelemetryEvent): string => {
+        if (e.package) return e.package;
         const match = /^Package:\s*(\S+)/.exec(e.telemetry ?? "");
         return match ? match[1] : "unknown";
       };
@@ -215,7 +248,21 @@ const server = createServer(async (req, res) => {
           await seedToPiecesOS(PIECES_BASE_URL, bodyText, title);
         } catch (err) {
           console.warn("PiecesOS not reachable for seeding; queued for retry.", err);
-          await seedQueue.enqueue(bodyText, title);
+          await seedQueue.enqueue(bodyText, title, "asset");
+        }
+
+        // Also write to the workstream-event stream (feeds PiecesOS's own
+        // timeline/rollup generation, which assets alone don't). Queued for
+        // retry on the same durable queue as the asset write above —
+        // SeedQueue dispatches by kind, so a failed workstream-event write
+        // gets the same reconciliation guarantee instead of being silently
+        // lost if PiecesOS happens to be down for this specific write and
+        // not the asset write moments earlier.
+        try {
+          await seedWorkstreamEvent(PIECES_BASE_URL, bodyText);
+        } catch (err) {
+          console.warn("PiecesOS not reachable for workstream event; queued for retry.", err);
+          await seedQueue.enqueue(bodyText, "", "workstream_event");
         }
       }
 

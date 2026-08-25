@@ -114,14 +114,14 @@ public class ShizukuMonitorPlugin extends Plugin {
             return;
         }
 
-        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            Shizuku.requestPermission(0);
-            call.reject("Shizuku permission requested. Please approve in the Shizuku app.");
+        if (!Shizuku.pingBinder()) {
+            call.reject("Shizuku is not active. Start the Shizuku app daemon.");
             return;
         }
 
-        if (!Shizuku.pingBinder()) {
-            call.reject("Shizuku is not active. Start the Shizuku app daemon.");
+        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            Shizuku.requestPermission(0);
+            call.reject("Shizuku permission requested. Please approve in the Shizuku app.");
             return;
         }
 
@@ -145,14 +145,14 @@ public class ShizukuMonitorPlugin extends Plugin {
     // app, so this is a second, narrower privileged action layered on top of that.
     @PluginMethod
     public void enableAccessibilityService(PluginCall call) {
-        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            Shizuku.requestPermission(0);
-            call.reject("Shizuku permission requested. Please approve in the Shizuku app.");
+        if (!Shizuku.pingBinder()) {
+            call.reject("Shizuku is not active. Start the Shizuku app daemon.");
             return;
         }
 
-        if (!Shizuku.pingBinder()) {
-            call.reject("Shizuku is not active. Start the Shizuku app daemon.");
+        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            Shizuku.requestPermission(0);
+            call.reject("Shizuku permission requested. Please approve in the Shizuku app.");
             return;
         }
 
