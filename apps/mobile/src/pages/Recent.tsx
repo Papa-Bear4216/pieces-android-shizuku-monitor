@@ -1,24 +1,17 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import {
-  getRecentConversations,
-  getRecentAssets,
-  searchAssets,
-  searchRelevant,
-  getAsset,
-  getConversationMessages,
+  getWorkstreamSummaries,
   ProxyNotConfiguredError,
   HomeNodeUnreachableError,
-  type ConversationSummary,
-  type AssetSummary,
-  type ConversationMessage,
+  type WorkstreamSummary,
 } from "../lib/api";
 import { recordEvent } from "../lib/usage";
 import { flushUsageEvents } from "../lib/flush";
 
 type State =
   | { kind: "loading" }
-  | { kind: "loaded"; conversations: ConversationSummary[]; assets: AssetSummary[] }
+  | { kind: "loaded"; summaries: WorkstreamSummary[] }
   | { kind: "not-configured" }
   | { kind: "home-offline"; message: string }
   | { kind: "error"; message: string };
@@ -26,23 +19,13 @@ type State =
 export default function Recent() {
   const navigate = useNavigate();
   const [state, setState] = useState<State>({ kind: "loading" });
-  const [query, setQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<AssetSummary[] | null>(null);
-  
-  // Track expanded assets
-  const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
-  const [assetContent, setAssetContent] = useState<string>("");
-
-  // Track expanded conversations
-  const [expandedConversation, setExpandedConversation] = useState<string | null>(null);
-  const [conversationMessages, setConversationMessages] = useState<ConversationMessage[] | null>(null);
-  const [conversationLoadingError, setConversationLoadingError] = useState<string>("");
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   async function load() {
     setState({ kind: "loading" });
     try {
-      const [conversations, assets] = await Promise.all([getRecentConversations(), getRecentAssets()]);
-      setState({ kind: "loaded", conversations, assets });
+      const summaries = await getWorkstreamSummaries();
+      setState({ kind: "loaded", summaries });
     } catch (err) {
       if (err instanceof ProxyNotConfiguredError) {
         setState({ kind: "not-configured" });
@@ -60,102 +43,10 @@ export default function Recent() {
     flushUsageEvents();
   }, []);
 
-  async function handleSearch() {
-    if (!query.trim()) {
-      setSearchResults(null);
-      return;
-    }
-    // Prefer semantic (embeddings-based) relevance search — better matches
-    // than plain text search, e.g. finds results that don't share exact
-    // wording with the query. Falls back to searchAssets() (plain text
-    // match) if relevance search fails, so search still works if PiecesOS
-    // regresses on /qgpt/relevance or an older home proxy is in the path.
-    let usedFallback = false;
-    try {
-      const results = await searchRelevant(query);
-      setSearchResults(results);
-      recordEvent({
-        type: "search",
-        screen: "recent",
-        query,
-        resultCount: results.length,
-        mode: "relevant",
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    } catch (err) {
-      usedFallback = true;
-    }
-    try {
-      const results = await searchAssets(query);
-      setSearchResults(results);
-      recordEvent({
-        type: "search",
-        screen: "recent",
-        query,
-        resultCount: results.length,
-        mode: usedFallback ? "text-fallback" : "text",
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err) {
-      setSearchResults([]);
-    } finally {
-      flushUsageEvents();
-    }
-  }
-
-  async function handleExpandAsset(id: string) {
-    if (expandedAsset === id) {
-      setExpandedAsset(null); // Collapse
-      return;
-    }
-    
-    setExpandedAsset(id);
-    setAssetContent("Loading content...");
-    
-    try {
-      const content = await getAsset(id);
-      setAssetContent(content);
-    } catch (err: any) {
-      setAssetContent("Failed to load: " + err.message);
-    }
-  }
-
-  async function handleExpandConversation(id: string) {
-    if (expandedConversation === id) {
-      setExpandedConversation(null); // Collapse
-      return;
-    }
-    
-    setExpandedConversation(id);
-    setConversationMessages(null);
-    setConversationLoadingError("");
-    
-    try {
-      const messages = await getConversationMessages(id);
-      setConversationMessages(messages);
-    } catch (err: any) {
-      setConversationLoadingError("Failed to load: " + err.message);
-    }
-  }
-
   return (
     <div className="page">
-      <h1>Recent</h1>
-
-      <label>
-        Search assets
-        <input
-          type="text"
-          placeholder="search by meaning or exact text…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-        />
-      </label>
-      <button onClick={handleSearch} disabled={!query.trim()}>
-        Search
-      </button>
+      <h1>What Got Done</h1>
+      <p className="hint">PiecesOS's own workflow summaries — not a raw activity feed.</p>
 
       {state.kind === "loading" && <p>Loading…</p>}
 
@@ -180,98 +71,28 @@ export default function Recent() {
         </>
       )}
 
-      {searchResults !== null && (
-        <section>
-          <h2>Search results</h2>
-          {searchResults.length === 0 && <p>No matches.</p>}
+      {state.kind === "loaded" && (
+        <>
+          <button onClick={load} style={{ marginBottom: 12 }}>
+            Refresh
+          </button>
+          {state.summaries.length === 0 && <p>No workflow summaries yet.</p>}
           <ul>
-            {searchResults.map((a) => (
-              <li key={a.id} style={{ marginBottom: 12, border: "1px solid #ccc", padding: 8, borderRadius: 4 }}>
-                <div onClick={() => handleExpandAsset(a.id)} style={{ cursor: "pointer" }}>
-                  <strong>{a.name}</strong> — {a.updated}
-                  <span style={{ float: "right" }}>{expandedAsset === a.id ? "▲" : "▼"}</span>
+            {state.summaries.map((s) => (
+              <li key={s.id} style={{ marginBottom: 12, border: "1px solid #444", padding: 12, borderRadius: 8 }}>
+                <div
+                  onClick={() => setExpanded(expanded === s.id ? null : s.id)}
+                  style={{ cursor: "pointer", display: "flex", justifyContent: "space-between" }}
+                >
+                  <strong>{s.name}</strong>
+                  <span style={{ color: "#888", fontSize: 12 }}>{s.created}</span>
                 </div>
-                {expandedAsset === a.id && (
-                  <pre style={{ marginTop: 8, padding: 8, background: "#f4f4f4", color: "black", whiteSpace: "pre-wrap", overflowX: "auto" }}>
-                    {assetContent}
-                  </pre>
+                {expanded === s.id && (
+                  <div style={{ marginTop: 8, whiteSpace: "pre-wrap", fontSize: 14, color: "#ccc" }}>{s.text}</div>
                 )}
               </li>
             ))}
           </ul>
-        </section>
-      )}
-
-      {state.kind === "loaded" && (
-        <>
-          <section>
-            <h2>Conversations</h2>
-            <ul>
-              {state.conversations.slice(0, 20).map((c) => (
-                <li key={c.id} style={{ marginBottom: 12, border: "1px solid #ccc", padding: 8, borderRadius: 4 }}>
-                  <div onClick={() => handleExpandConversation(c.id)} style={{ cursor: "pointer" }}>
-                    <strong>{c.name}</strong> — {c.updated}
-                    <span style={{ float: "right" }}>{expandedConversation === c.id ? "▲" : "▼"}</span>
-                  </div>
-                  {expandedConversation === c.id && (
-                    <div style={{ marginTop: 8, padding: 8, background: "#f4f4f4", color: "black", borderRadius: 4 }}>
-                      {conversationLoadingError && <p style={{color: "red"}}>{conversationLoadingError}</p>}
-                      {!conversationMessages && !conversationLoadingError && <p>Loading timeline...</p>}
-                      {conversationMessages && conversationMessages.length === 0 && <p>No messages in this conversation.</p>}
-                      {conversationMessages && conversationMessages.map((msg) => {
-                        const isUser = msg.role.toLowerCase() === "user";
-                        return (
-                          <div key={msg.id} style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            alignItems: isUser ? "flex-end" : "flex-start",
-                            marginBottom: 12
-                          }}>
-                            <div style={{
-                              maxWidth: "85%",
-                              padding: "10px 14px",
-                              borderRadius: "18px",
-                              backgroundColor: isUser ? "#007AFF" : "#E5E5EA",
-                              color: isUser ? "#FFF" : "#000",
-                              borderBottomRightRadius: isUser ? "4px" : "18px",
-                              borderBottomLeftRadius: isUser ? "18px" : "4px",
-                              boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
-                            }}>
-                              <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                                {msg.text || <i style={{ opacity: 0.7 }}>(No text content)</i>}
-                              </div>
-                            </div>
-                            <small style={{ color: "#8e8e93", marginTop: 4, fontSize: "0.75rem", padding: "0 4px" }}>
-                              {msg.timestamp}
-                            </small>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          <section>
-            <h2>Assets</h2>
-            <ul>
-              {state.assets.slice(0, 100).map((a) => (
-                <li key={a.id} style={{ marginBottom: 12, border: "1px solid #ccc", padding: 8, borderRadius: 4 }}>
-                  <div onClick={() => handleExpandAsset(a.id)} style={{ cursor: "pointer" }}>
-                    <strong>{a.name}</strong> — {a.updated}
-                    <span style={{ float: "right" }}>{expandedAsset === a.id ? "▲" : "▼"}</span>
-                  </div>
-                  {expandedAsset === a.id && (
-                    <pre style={{ marginTop: 8, padding: 8, background: "#f4f4f4", color: "black", whiteSpace: "pre-wrap", overflowX: "auto" }}>
-                      {assetContent}
-                    </pre>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </section>
         </>
       )}
 

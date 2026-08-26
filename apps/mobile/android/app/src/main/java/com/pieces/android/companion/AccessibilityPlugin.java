@@ -1,9 +1,13 @@
 package com.pieces.android.companion;
 
+import android.app.AppOpsManager;
+import android.app.usage.UsageStats;
+import android.app.usage.UsageStatsManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.os.Process;
 import android.provider.Settings;
 import android.text.TextUtils;
 
@@ -19,6 +23,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 @CapacitorPlugin(name = "AccessibilityScanner")
 public class AccessibilityPlugin extends Plugin {
@@ -147,6 +152,26 @@ public class AccessibilityPlugin extends Plugin {
         return false;
     }
 
+    // ApplicationInfo.CATEGORY_* constants (API 26+) — getCategoryTitle() needs
+    // a Resources handle we don't have per-app here, so map to a fixed label
+    // set ourselves. CATEGORY_UNDEFINED (-1) and anything unmapped falls into
+    // "Uncategorized" in the JS-side grouping, not here — this method only
+    // reports the raw label, grouping is a picker-UI concern.
+    private static String categoryLabel(int category) {
+        switch (category) {
+            case ApplicationInfo.CATEGORY_GAME: return "Game";
+            case ApplicationInfo.CATEGORY_AUDIO: return "Audio";
+            case ApplicationInfo.CATEGORY_VIDEO: return "Video";
+            case ApplicationInfo.CATEGORY_IMAGE: return "Image";
+            case ApplicationInfo.CATEGORY_SOCIAL: return "Social";
+            case ApplicationInfo.CATEGORY_NEWS: return "News";
+            case ApplicationInfo.CATEGORY_MAPS: return "Maps";
+            case ApplicationInfo.CATEGORY_PRODUCTIVITY: return "Productivity";
+            case ApplicationInfo.CATEGORY_ACCESSIBILITY: return "Accessibility";
+            default: return "Uncategorized";
+        }
+    }
+
     @PluginMethod
     public void listInstalledApps(PluginCall call) {
         PackageManager pm = getContext().getPackageManager();
@@ -155,14 +180,95 @@ public class AccessibilityPlugin extends Plugin {
         JSArray result = new JSArray();
         for (ApplicationInfo app : apps) {
             if (isExcluded(app.packageName)) continue;
+            boolean isSystem = (app.flags & ApplicationInfo.FLAG_SYSTEM) != 0
+                || (app.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0;
             JSObject entry = new JSObject();
             entry.put("packageName", app.packageName);
             entry.put("label", pm.getApplicationLabel(app).toString());
+            entry.put("isSystemApp", isSystem);
+            entry.put("category", categoryLabel(app.category));
             result.put(entry);
         }
 
         JSObject ret = new JSObject();
         ret.put("apps", result);
+        call.resolve(ret);
+    }
+
+    // Usage Access is a special AppOps permission — no manifest runtime-permission
+    // dialog exists for it. The user must grant it manually via the Settings
+    // screen this opens, same UX shape as openAccessibilitySettings() above.
+    @PluginMethod
+    public void isUsageAccessGranted(PluginCall call) {
+        AppOpsManager appOps = (AppOpsManager) getContext().getSystemService(android.content.Context.APP_OPS_SERVICE);
+        int mode = appOps.unsafeCheckOpNoThrow(
+            AppOpsManager.OPSTR_GET_USAGE_STATS,
+            Process.myUid(),
+            getContext().getPackageName()
+        );
+        JSObject ret = new JSObject();
+        ret.put("granted", mode == AppOpsManager.MODE_ALLOWED);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void openUsageAccessSettings(PluginCall call) {
+        Intent intent = new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        getContext().startActivity(intent);
+        call.resolve();
+    }
+
+    // Suggestion source for the picker's "Recently used" section — never
+    // capture-gating on its own. Results still only affect the allowlist via
+    // the same setAllowlist() opt-in path the picker already uses; this just
+    // pre-populates what gets checked by default, all user-editable before save.
+    // Below this, a package is treated as incidentally foregrounded (a
+    // settings screen passed through, a permission dialog, a notification-
+    // shade tap) rather than actually used. On a real device with 500+
+    // installed packages, even genuine foreground-only time (not background
+    // service time — getTotalTimeInForeground() already excludes that)
+    // accumulates across enough apps that an any-nonzero filter alone let
+    // through 520 packages. This threshold is the fix, not a background-vs-
+    // foreground distinction, which UsageStats already handles correctly.
+    private static final long MIN_FOREGROUND_MS_FOR_RECENT = TimeUnit.SECONDS.toMillis(60);
+
+    @PluginMethod
+    public void getRecentlyUsedPackages(PluginCall call) {
+        Integer days = call.getInt("days", 7);
+        UsageStatsManager usm = (UsageStatsManager) getContext().getSystemService(android.content.Context.USAGE_STATS_SERVICE);
+        if (usm == null) {
+            call.reject("UsageStatsManager unavailable");
+            return;
+        }
+
+        long end = System.currentTimeMillis();
+        long start = end - TimeUnit.DAYS.toMillis(days);
+        // INTERVAL_DAILY returns one entry per package PER DAY BUCKET, not one
+        // total per package — sum across buckets before thresholding, or a
+        // package with a few seconds each day over 7 days looks like several
+        // separate sub-threshold blips instead of the ~minutes it actually adds to.
+        List<UsageStats> stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, start, end);
+
+        java.util.Map<String, Long> totalForegroundMs = new java.util.HashMap<>();
+        if (stats != null) {
+            for (UsageStats stat : stats) {
+                String pkg = stat.getPackageName();
+                if (pkg == null || isExcluded(pkg)) continue;
+                long existing = totalForegroundMs.containsKey(pkg) ? totalForegroundMs.get(pkg) : 0L;
+                totalForegroundMs.put(pkg, existing + stat.getTotalTimeInForeground());
+            }
+        }
+
+        JSArray result = new JSArray();
+        for (java.util.Map.Entry<String, Long> entry : totalForegroundMs.entrySet()) {
+            if (entry.getValue() >= MIN_FOREGROUND_MS_FOR_RECENT) {
+                result.put(entry.getKey());
+            }
+        }
+
+        JSObject ret = new JSObject();
+        ret.put("packages", result);
         call.resolve(ret);
     }
 

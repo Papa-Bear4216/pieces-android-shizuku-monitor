@@ -24,7 +24,7 @@ type State =
   | { kind: "home-offline"; message: string }
   | { kind: "error"; message: string };
 
-type AppEntry = { packageName: string; label: string };
+type AppEntry = { packageName: string; label: string; isSystemApp: boolean; category: string };
 
 const PASSIVE_MODE_CONFIRM_PHRASE = "I understand";
 
@@ -36,6 +36,10 @@ export default function Status() {
   const [apps, setApps] = useState<AppEntry[]>([]);
   const [allowlist, setAllowlistState] = useState<Set<string>>(new Set());
   const [showPicker, setShowPicker] = useState(false);
+  const [recentPackages, setRecentPackages] = useState<Set<string>>(new Set());
+  const [usageAccessGranted, setUsageAccessGranted] = useState(false);
+  const [showSystemApps, setShowSystemApps] = useState(false);
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const [passiveMode, setPassiveMode] = useState(false);
   const [passiveConfirmText, setPassiveConfirmText] = useState("");
   const [showPassiveConfirm, setShowPassiveConfirm] = useState(false);
@@ -101,16 +105,44 @@ export default function Status() {
 
   async function openPicker() {
     try {
-      const [{ apps }, { packages }] = await Promise.all([
+      const [{ apps }, { packages }, { granted }] = await Promise.all([
         AccessibilityScanner.listInstalledApps(),
         AccessibilityScanner.getAllowlist(),
+        AccessibilityScanner.isUsageAccessGranted(),
       ]);
       setApps(apps);
-      setAllowlistState(new Set(packages));
+      setUsageAccessGranted(granted);
+
+      // Suggestion, not an override — recent packages are pre-checked only if
+      // the saved allowlist is empty (first-run convenience). An existing
+      // allowlist reflects a deliberate prior choice and is never silently
+      // expanded by this.
+      if (granted) {
+        const { packages: recent } = await AccessibilityScanner.getRecentlyUsedPackages({ days: 7 });
+        setRecentPackages(new Set(recent));
+        if (packages.length === 0 && recent.length > 0) {
+          const installedNames = new Set(apps.map((a: AppEntry) => a.packageName));
+          const suggested = recent.filter((p: string) => installedNames.has(p));
+          setAllowlistState(new Set(suggested));
+          await AccessibilityScanner.setAllowlist({ packages: suggested });
+        } else {
+          setAllowlistState(new Set(packages));
+        }
+      } else {
+        setAllowlistState(new Set(packages));
+      }
+
       setShowPicker(true);
     } catch (e: any) {
       alert("Could not load app list: " + (e.message || String(e)));
     }
+  }
+
+  function toggleCategoryCollapsed(category: string) {
+    const next = new Set(collapsedCategories);
+    if (next.has(category)) next.delete(category);
+    else next.add(category);
+    setCollapsedCategories(next);
   }
 
   async function toggleApp(packageName: string) {
@@ -259,40 +291,114 @@ export default function Status() {
                 Scan Screen Text
               </button>
 
-              {showPicker && (
-                <div style={{ marginTop: 8, maxHeight: 300, overflowY: 'auto', background: '#111', borderRadius: 8, padding: 8 }}>
-                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              {showPicker && (() => {
+                const userApps = apps.filter(a => !a.isSystemApp);
+                const systemApps = apps.filter(a => a.isSystemApp);
+                const recentApps = userApps.filter(a => recentPackages.has(a.packageName));
+                const recentNames = new Set(recentApps.map(a => a.packageName));
+                const byCategory = new Map<string, AppEntry[]>();
+                for (const app of userApps) {
+                  if (recentNames.has(app.packageName)) continue;
+                  const list = byCategory.get(app.category) ?? [];
+                  list.push(app);
+                  byCategory.set(app.category, list);
+                }
+                const categoryNames = Array.from(byCategory.keys())
+                  .filter(c => c !== "Uncategorized")
+                  .sort();
+                if (byCategory.has("Uncategorized")) categoryNames.push("Uncategorized");
+
+                const renderAppRow = (app: AppEntry) => (
+                  <label key={app.packageName} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13, color: 'white' }}>
+                    <input
+                      type="checkbox"
+                      checked={allowlist.has(app.packageName)}
+                      onChange={() => toggleApp(app.packageName)}
+                    />
+                    {app.label} <span style={{ color: '#888', fontSize: 11 }}>({app.packageName})</span>
+                  </label>
+                );
+
+                return (
+                  <div style={{ marginTop: 8, maxHeight: 400, overflowY: 'auto', background: '#111', borderRadius: 8, padding: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                      <button
+                        onClick={selectAllApps}
+                        style={{ padding: '4px 10px', fontSize: 12, background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                      >
+                        Select all
+                      </button>
+                      <button
+                        onClick={deselectAllApps}
+                        style={{ padding: '4px 10px', fontSize: 12, background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                      >
+                        Deselect all
+                      </button>
+                    </div>
+
+                    {!usageAccessGranted && (
+                      <div style={{ marginBottom: 8, padding: 8, background: '#222', borderRadius: 6 }}>
+                        <p style={{ color: '#ccc', fontSize: 11, margin: '0 0 6px 0' }}>
+                          Grant Usage Access to auto-suggest apps you've used this week.
+                        </p>
+                        <button
+                          onClick={() => AccessibilityScanner.openUsageAccessSettings()}
+                          style={{ padding: '4px 10px', fontSize: 12, background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                        >
+                          Grant Usage Access
+                        </button>
+                      </div>
+                    )}
+
+                    {recentApps.length > 0 && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 12, fontWeight: 'bold', color: '#9c9', margin: '4px 0' }}>
+                          Recently used (last 7 days)
+                        </div>
+                        {recentApps.map(renderAppRow)}
+                      </div>
+                    )}
+
+                    {categoryNames.map(category => {
+                      const collapsed = collapsedCategories.has(category);
+                      const categoryApps = (byCategory.get(category) ?? []).sort((a, b) => a.label.localeCompare(b.label));
+                      return (
+                        <div key={category} style={{ marginBottom: 4 }}>
+                          <div
+                            onClick={() => toggleCategoryCollapsed(category)}
+                            style={{ fontSize: 12, fontWeight: 'bold', color: '#ccc', margin: '4px 0', cursor: 'pointer' }}
+                          >
+                            {collapsed ? '▸' : '▾'} {category} ({categoryApps.length})
+                          </div>
+                          {!collapsed && categoryApps.map(renderAppRow)}
+                        </div>
+                      );
+                    })}
+
+                    {systemApps.length > 0 && (
+                      <div style={{ marginTop: 8, borderTop: '1px solid #333', paddingTop: 4 }}>
+                        <div
+                          onClick={() => setShowSystemApps(!showSystemApps)}
+                          style={{ fontSize: 12, fontWeight: 'bold', color: '#888', margin: '4px 0', cursor: 'pointer' }}
+                        >
+                          {showSystemApps ? '▾' : '▸'} System apps ({systemApps.length})
+                        </div>
+                        {showSystemApps && systemApps
+                          .slice()
+                          .sort((a, b) => a.label.localeCompare(b.label))
+                          .map(renderAppRow)}
+                      </div>
+                    )}
+
                     <button
-                      onClick={selectAllApps}
-                      style={{ padding: '4px 10px', fontSize: 12, background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                      onClick={() => setShowPicker(false)}
+                      style={{ marginTop: 8, padding: '4px 12px', background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
                     >
-                      Select all
-                    </button>
-                    <button
-                      onClick={deselectAllApps}
-                      style={{ padding: '4px 10px', fontSize: 12, background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
-                    >
-                      Deselect all
+                      Done
                     </button>
                   </div>
-                  {apps.map(app => (
-                    <label key={app.packageName} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13, color: 'white' }}>
-                      <input
-                        type="checkbox"
-                        checked={allowlist.has(app.packageName)}
-                        onChange={() => toggleApp(app.packageName)}
-                      />
-                      {app.label} <span style={{ color: '#888', fontSize: 11 }}>({app.packageName})</span>
-                    </label>
-                  ))}
-                  <button
-                    onClick={() => setShowPicker(false)}
-                    style={{ marginTop: 8, padding: '4px 12px', background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
-                  >
-                    Done
-                  </button>
-                </div>
-              )}
+                );
+              })()}
 
               <hr style={{ border: 0, borderTop: '1px solid #555', margin: '8px 0' }} />
 

@@ -8,6 +8,7 @@ import { summarizeTelemetry, seedToPiecesOS, seedWorkstreamEvent, TelemetryEvent
 import { SeedQueue } from "./seed-queue.js";
 import { shouldSeed } from "./surprisal.js";
 import { askOllamaFallback } from "./ollama-fallback.js";
+import { listWorkstreamSummaries } from "./summaries.js";
 import { MemoryClient } from "mem0ai";
 
 // Mem0 integration is optional — most PiecesOS users won't have an account.
@@ -150,6 +151,20 @@ const server = createServer(async (req, res) => {
       return;
     }
     sendJson(res, 200, result);
+    return;
+  }
+
+  // "What got done" — PiecesOS's own workstream-summary rollups, not raw
+  // captured telemetry. Special-cased (not in the generic allowlist) because
+  // it needs the annotation-hydration + SUMMARY-vs-profile filtering in
+  // summaries.ts, not a raw passthrough.
+  if (method === "GET" && url.pathname === "/mobile/summaries") {
+    try {
+      const summaries = await listWorkstreamSummaries(PIECES_BASE_URL);
+      sendJson(res, 200, { summaries });
+    } catch (err) {
+      sendJson(res, 502, { error: "Failed to load workstream summaries", detail: err instanceof Error ? err.message : String(err) });
+    }
     return;
   }
 

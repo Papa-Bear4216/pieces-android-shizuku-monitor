@@ -65,4 +65,10 @@
          screen-capture allowlisting) to see the full installed-app list on
          Android 11+, which restricts package visibility by default. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
+    <!-- Declarative only — this is an AppOps special permission with no runtime
+         dialog; actual grant happens via Settings.ACTION_USAGE_ACCESS_SETTINGS
+         (see AccessibilityPlugin.openUsageAccessSettings). Declaring it here is
+         standard practice for clarity even though the manifest entry alone
+         grants nothing. -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
 </manifest>

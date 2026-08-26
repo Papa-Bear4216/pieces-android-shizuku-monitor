@@ -31,12 +31,30 @@ const CLIENT_FETCH_TIMEOUT_MS = 10000;
 // The client timeout must exceed that, or it aborts requests the server was
 // still on track to complete successfully.
 const ASSETS_CLIENT_FETCH_TIMEOUT_MS = 35000;
+// /mobile/ask falls back to a local Ollama call (grounded in Pieces data)
+// when PiecesOS itself can't answer — CPU-bound local generation measured
+// 23.8s-63.9s in testing against OLLAMA_TIMEOUT_MS=90000 in
+// apps/proxy/src/ollama-fallback.ts. Must exceed that ceiling or the client
+// aborts requests the server was still on track to complete.
+const ASK_CLIENT_FETCH_TIMEOUT_MS = 100000;
+// /mobile/summaries makes one /workstream_summary/{id} call plus up to a few
+// parallel /annotation/{id} calls PER summary (see apps/proxy/src/summaries.ts) —
+// measured 0.4s for 21 summaries against the local PiecesOS install, but that's
+// with an unusually low PIECES_BASE_URL round-trip; give real headroom for a
+// slower network path rather than assume the default 10s always covers it.
+const SUMMARIES_CLIENT_FETCH_TIMEOUT_MS = 30000;
 
 async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
   const [baseUrl, token] = await Promise.all([getProxyBaseUrl(), getProxyToken()]);
   if (!baseUrl || !token) throw new ProxyNotConfiguredError();
 
-  const timeoutMs = path.startsWith("/mobile/recent/assets") ? ASSETS_CLIENT_FETCH_TIMEOUT_MS : CLIENT_FETCH_TIMEOUT_MS;
+  const timeoutMs = path.startsWith("/mobile/recent/assets")
+    ? ASSETS_CLIENT_FETCH_TIMEOUT_MS
+    : path.startsWith("/mobile/ask")
+      ? ASK_CLIENT_FETCH_TIMEOUT_MS
+      : path.startsWith("/mobile/summaries")
+        ? SUMMARIES_CLIENT_FETCH_TIMEOUT_MS
+        : CLIENT_FETCH_TIMEOUT_MS;
 
   let res: Response;
   try {
@@ -61,20 +79,6 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
   }
 
   return res;
-}
-
-export interface ConversationSummary {
-  id: string;
-  name: string;
-  created: string;
-  updated: string;
-}
-
-export interface AssetSummary {
-  id: string;
-  name: string;
-  created: string;
-  updated: string;
 }
 
 export type AskResult =
@@ -105,115 +109,24 @@ export async function getStatus(): Promise<{ health: string; version: string }> 
   return { health: await healthRes.text(), version: await versionRes.text() };
 }
 
-export async function getRecentConversations(): Promise<ConversationSummary[]> {
-  const res = await authedFetch("/mobile/recent/conversations");
-  if (!res.ok) throw new Error(`Recent conversations failed: HTTP ${res.status}`);
-  const body = await res.json();
-  const iterable = Array.isArray(body?.iterable) ? body.iterable : [];
-  return iterable.map((c: Record<string, any>) => ({
-    id: c.id,
-    name: c.name,
-    created: c.created?.readable ?? c.created?.value ?? "",
-    updated: c.updated?.readable ?? c.updated?.value ?? "",
-  }));
-}
-
-export async function getRecentAssets(): Promise<AssetSummary[]> {
-  const res = await authedFetch("/mobile/recent/assets");
-  if (!res.ok) throw new Error(`Recent assets failed: HTTP ${res.status}`);
-  const body = await res.json();
-  const iterable = Array.isArray(body?.iterable) ? body.iterable : [];
-  // PiecesOS's /assets was observed returning oldest-first (confirmed live:
-  // first item was 15 days old, last item was seconds old) — but that's
-  // positional order, not a documented contract. Sorting explicitly by
-  // created.value (an ISO timestamp, sorts correctly as a string) instead of
-  // just reversing means this stays correct even if PiecesOS's ordering ever
-  // changes, rather than silently flipping back to oldest-first again with
-  // no visible symptom until someone happens to notice.
-  return iterable
-    .slice()
-    .sort((a: Record<string, any>, b: Record<string, any>) => {
-      const aTime = a.created?.value ?? "";
-      const bTime = b.created?.value ?? "";
-      return bTime.localeCompare(aTime);
-    })
-    .map((a: Record<string, any>) => ({
-      id: a.id,
-      name: a.name,
-      created: a.created?.readable ?? a.created?.value ?? "",
-      updated: a.updated?.readable ?? a.updated?.value ?? "",
-    }));
-}
-
-export async function searchAssets(query: string): Promise<AssetSummary[]> {
-  const res = await authedFetch(`/mobile/recent/search?query=${encodeURIComponent(query)}`);
-  if (!res.ok) throw new Error(`Search failed: HTTP ${res.status}`);
-  const body = await res.json();
-  const iterable = Array.isArray(body?.iterable) ? body.iterable : [];
-  return iterable.map((r: Record<string, any>) => ({
-    id: r.asset?.id,
-    name: r.asset?.name,
-    created: r.asset?.created?.readable ?? r.asset?.created?.value ?? "",
-    updated: r.asset?.updated?.readable ?? r.asset?.updated?.value ?? "",
-  }));
+export interface WorkstreamSummary {
+  id: string;
+  name: string;
+  created: string;
+  text: string;
 }
 
 /**
- * Semantic (embeddings-based) search over PiecesOS assets — distinct from
- * searchAssets()'s plain text match. Backed by /qgpt/relevance with
- * options.database:true, confirmed live on PiecesOS 12.6.0 (see
- * docs/ALLOWED_ROUTES.md) after being HTTP 500 on 12.5.0.
+ * "What got done" — PiecesOS's own AI-generated workstream rollups, not raw
+ * captured telemetry. The proxy filters each summary down to its SUMMARY (or
+ * DESCRIPTION) annotation only; the broader HIERARCHICAL_PROFILE_SUMMARY
+ * annotation every summary also carries never reaches this client.
  */
-export async function searchRelevant(query: string): Promise<AssetSummary[]> {
-  const res = await authedFetch(`/mobile/search/relevant?query=${encodeURIComponent(query)}`);
-  if (!res.ok) throw new Error(`Relevant search failed: HTTP ${res.status}`);
+export async function getWorkstreamSummaries(): Promise<WorkstreamSummary[]> {
+  const res = await authedFetch("/mobile/summaries");
+  if (!res.ok) throw new Error(`Summaries fetch failed: HTTP ${res.status}`);
   const body = await res.json();
-  const iterable = Array.isArray(body?.iterable) ? body.iterable : [];
-  return iterable.map((a: Record<string, any>) => ({
-    id: a.id,
-    name: a.name,
-    created: a.created ?? "",
-    updated: a.updated ?? "",
-  }));
-}
-
-export async function getAsset(id: string): Promise<string> {
-  const res = await authedFetch(`/mobile/asset/${id}`);
-  if (!res.ok) throw new Error(`Asset fetch failed: HTTP ${res.status}`);
-  const body = await res.json();
-  
-  // Try to extract the raw string from the format (Pieces OS schema)
-  try {
-    return body.original.reference.fragment.string.raw;
-  } catch (err) {
-    return JSON.stringify(body, null, 2);
-  }
-}
-
-export interface ConversationMessage {
-  id: string;
-  role: string;
-  text: string;
-  timestamp: string;
-}
-
-export async function getConversationMessages(id: string): Promise<ConversationMessage[]> {
-  const res = await authedFetch(`/mobile/conversation/${id}/messages`);
-  if (!res.ok) throw new Error(`Conversation messages failed: HTTP ${res.status}`);
-  const body = await res.json();
-  const iterable = Array.isArray(body?.iterable) ? body.iterable : [];
-  return iterable.map((m: any) => {
-    let text = "";
-    if (m.fragment?.string?.raw) {
-      text = m.fragment.string.raw;
-    }
-    return {
-      id: m.id,
-      role: m.role ?? "UNKNOWN",
-      text,
-      timestamp: m.created?.readable ?? m.created?.value ?? "",
-    };
-  });
+  return Array.isArray(body?.summaries) ? body.summaries : [];
 }
 
 export async function ask(query: string): Promise<AskResult> {
