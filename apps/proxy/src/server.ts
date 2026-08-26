@@ -7,6 +7,7 @@ import { isValidBearerToken } from "./auth.js";
 import { summarizeTelemetry, seedToPiecesOS, seedWorkstreamEvent, TelemetryEvent } from "./seeder.js";
 import { SeedQueue } from "./seed-queue.js";
 import { shouldSeed } from "./surprisal.js";
+import { askOllamaFallback } from "./ollama-fallback.js";
 import { MemoryClient } from "mem0ai";
 
 // Mem0 integration is optional — most PiecesOS users won't have an account.
@@ -139,6 +140,15 @@ const server = createServer(async (req, res) => {
     }
 
     const result = await pieces.ask(query);
+    if (result.status === "unavailable") {
+      // pieces.ask() is unavailable — currently always, since the account's
+      // cloud allocation is broken (docs/ALLOWED_ROUTES.md's "Ask root cause"
+      // section). Try a local, Pieces-data-grounded fallback rather than
+      // surfacing a dead end; never worse than the original result if it fails.
+      const fallback = await askOllamaFallback(pieces, PIECES_BASE_URL, query);
+      sendJson(res, 200, fallback.status === "answered" ? fallback : result);
+      return;
+    }
     sendJson(res, 200, result);
     return;
   }
