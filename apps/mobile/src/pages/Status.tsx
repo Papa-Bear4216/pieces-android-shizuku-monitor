@@ -198,6 +198,7 @@ export default function Status() {
           screen: "background",
           telemetry: `Package: ${res.package}\n\n${res.textNodes}`,
           package: res.package,
+          app_label: res.appLabel,
           timestamp: new Date().toISOString(),
         });
         await flushUsageEvents();

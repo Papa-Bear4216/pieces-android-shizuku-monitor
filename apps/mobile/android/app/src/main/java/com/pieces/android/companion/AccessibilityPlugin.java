@@ -387,8 +387,19 @@ public class AccessibilityPlugin extends Plugin {
     @PluginMethod
     public void getActiveScreenText(PluginCall call) {
         try {
+            String packageName = PiecesAccessibilityService.lastCapturedPackage;
+            String appLabel = "";
+            if (!packageName.isEmpty()) {
+                try {
+                    PackageManager pm = getContext().getPackageManager();
+                    ApplicationInfo ai = pm.getApplicationInfo(packageName, 0);
+                    appLabel = pm.getApplicationLabel(ai).toString();
+                } catch (PackageManager.NameNotFoundException ignored) {}
+            }
+
             JSObject ret = new JSObject();
-            ret.put("package", PiecesAccessibilityService.lastCapturedPackage);
+            ret.put("package", packageName);
+            ret.put("appLabel", appLabel);
             ret.put("textNodes", String.join("\n", PiecesAccessibilityService.lastCapturedText));
 
             if (PiecesAccessibilityService.lastCapturedText.isEmpty()) {
