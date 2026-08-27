@@ -1,13 +1,10 @@
 export type TelemetryEvent = {
-  type: string;
-  screen?: string;
-  query?: string;
-  result?: string;
-  resultCount?: number;
-  mode?: string;
-  telemetry?: string;
+  type: "system_telemetry";
+  screen: string;
+  telemetry: string;
   package?: string;
-  timestamp?: string;
+  app_label?: string;   // Human-readable app name
+  timestamp: string;
 };
 
 // Matches PiecesAccessibilityService.extractText's "role|text" tagging —
