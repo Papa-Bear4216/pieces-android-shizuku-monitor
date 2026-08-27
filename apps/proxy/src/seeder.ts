@@ -345,10 +345,89 @@ export function summarizeTelemetry(e: TelemetryEvent): string {
   return `${header}\n\nsummary:\n${summaryLines.join("\n")}\n\nraw:\n${raw}`;
 }
 
-export async function seedToPiecesOS(piecesBaseUrl: string, bodyText: string, title: string): Promise<void> {
-  // Implementation would go here
+// /connect's response identifies this proxy as an application to PiecesOS —
+// static input, static output, so it's fetched once and reused for every
+// seed instead of paying a round-trip on every single write. A rejected
+// promise is never cached (reset to null in .catch) so one PiecesOS hiccup
+// doesn't permanently break seeding — the next seed just retries /connect.
+let cachedApplication: Promise<any> | null = null;
+
+async function getApplication(piecesBaseUrl: string): Promise<any> {
+  if (!cachedApplication) {
+    cachedApplication = fetch(`${piecesBaseUrl}/connect`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        application: {
+          name: "PiecesAndroidProxy",
+          version: "0.0.1",
+          platform: "DESKTOP",
+        },
+      }),
+    }).then(async (res) => {
+      if (!res.ok) throw new Error("Failed to connect to Pieces OS");
+      const context = await res.json();
+      return context.application;
+    }).catch((err) => {
+      cachedApplication = null;
+      throw err;
+    });
+  }
+  return cachedApplication;
 }
 
-export async function seedWorkstreamEvent(piecesBaseUrl: string, bodyText: string): Promise<void> {
-  // Implementation would go here
+export async function seedToPiecesOS(piecesBaseUrl: string, bodyText: string, title: string) {
+  // 1) Identify the client application (cached — see getApplication above)
+  const application = await getApplication(piecesBaseUrl);
+
+  // 2) Create an asset
+  const createRes = await fetch(`${piecesBaseUrl}/assets/create`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      type: "SEEDED_ASSET",
+      asset: {
+        application,
+        metadata: { name: title },
+        format: {
+          fragment: {
+            string: { raw: bodyText },
+          },
+        },
+      },
+    }),
+  });
+
+  if (!createRes.ok) throw new Error("Failed to create Asset in Pieces OS");
+}
+
+// Writes to PiecesOS's workstream-event stream — a separate store from
+// assets (confirmed live: 2,495+ existing native events — calendar, IDE,
+// browser activity — completely distinct from the assets list). Assets are
+// good for "save this snippet" and are searchable via /qgpt/relevance, but
+// they don't feed PiecesOS's own timeline/rollup generation the way
+// workstream events do. Written alongside assets (not instead of), so both
+// surfaces stay populated for this data.
+//
+// Body shape confirmed by live testing against this PiecesOS install
+// (12.6.1), not just inferred from the vendored @pieces.app/pieces-os-client
+// SDK — the SDK's `seededWorkstreamEvent` wrapper key does NOT work against
+// the real server; the body must be flat: { application, trigger, readable }.
+export async function seedWorkstreamEvent(piecesBaseUrl: string, readable: string) {
+  const application = await getApplication(piecesBaseUrl);
+
+  const res = await fetch(`${piecesBaseUrl}/workstream_events/create`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      application,
+      // checkIn matches this data's actual semantics best: a periodic
+      // "this app was in the foreground, here's what was on screen" signal,
+      // not a discrete copy/paste/tab-switch/file-open action.
+      trigger: { checkIn: true },
+      readable,
+    }),
+  });
+
+  if (!res.ok) throw new Error("Failed to create WorkstreamEvent in Pieces OS");
 }

@@ -166,13 +166,24 @@ export class PiecesClient {
    * resolved — see ALLOWED_ROUTES.md's "broken/unusable" table.
    */
   async ask(query: string): Promise<AskResult> {
+    // question:true makes PiecesOS run the LLM generation step inline with
+    // the relevance search, not just a vector lookup — same reasoning as
+    // relevantAssets()'s RELEVANCE_TIMEOUT_MS (measured 5.5s for search alone
+    // against 108 assets); the default 5s here was cutting off the real
+    // answer path with a false "did not respond in time" once the database
+    // grew past a trivial size.
+    const ASK_TIMEOUT_MS = 20000;
     let relevanceRes: Response;
     try {
-      relevanceRes = await this.fetch("/qgpt/relevance", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, options: { database: true, question: true } }),
-      });
+      relevanceRes = await this.fetch(
+        "/qgpt/relevance",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, options: { database: true, question: true } }),
+        },
+        ASK_TIMEOUT_MS,
+      );
     } catch (err) {
       const isTimeout = err instanceof Error && err.name === "TimeoutError";
       return {
