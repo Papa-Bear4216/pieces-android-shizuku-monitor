@@ -192,3 +192,48 @@ export async function seedWorkstreamEvent(piecesBaseUrl: string, readable: strin
 
   if (!res.ok) throw new Error("Failed to create WorkstreamEvent in Pieces OS");
 }
+import { createHash } from "node:crypto";
+
+export type TelemetryEvent = {
+  type: "system_telemetry";
+  screen: string;
+  telemetry: string;
+  package?: string;
+  timestamp: string;
+};
+
+export function summarizeTelemetry(event: TelemetryEvent): string {
+  let text = event.telemetry || '';
+  
+  // Truncate to 2000 characters
+  if (text.length > 2000) {
+    text = text.substring(0, 2000) + '... [truncated]';
+  }
+  
+  // Remove sensitive tokens
+  text = text.replace(/\b[a-zA-Z0-9]{32,}\b/g, '[TOKEN]')
+             .replace(/\bpassword\s*=\s*\S+/gi, 'password=[REDACTED]');
+  
+  // Normalize whitespace
+  text = text.replace(/\s+/g, ' ');
+  
+  // Extract key information
+  const titleMatch = text.match(/title\|(.+)/);
+  const title = titleMatch ? titleMatch[1] : '';
+  
+  // Remove low-value content
+  text = text.split('\n')
+    .filter(line => !line.includes('button|') && line.trim().length > 5)
+    .join('\n');
+  
+  // Add context headers
+  return `Package: ${event.package}\nTitle: ${title}\n\n${text}`;
+}
+
+export async function seedToPiecesOS(piecesBaseUrl: string, bodyText: string, title: string): Promise<void> {
+  // Implementation would go here
+}
+
+export async function seedWorkstreamEvent(piecesBaseUrl: string, bodyText: string): Promise<void> {
+  // Implementation would go here
+}

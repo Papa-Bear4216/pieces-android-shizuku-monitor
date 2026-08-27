@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { PiecesClient } from "@pieces-android/pieces-api";
 import { findAllowedRoute } from "@pieces-android/allowlist";
 import { isValidBearerToken } from "./auth.ts";
-import { summarizeTelemetry, seedToPiecesOS, seedWorkstreamEvent, TelemetryEvent } from "./seeder.js";
+import { summarizeTelemetry, seedToPiecesOS, seedWorkstreamEvent, TelemetryEvent } from "./seeder.ts";
 import { SeedQueue } from "./seed-queue.js";
 import { shouldSeed } from "./surprisal.js";
 import { askOllamaFallback } from "./ollama-fallback.js";
