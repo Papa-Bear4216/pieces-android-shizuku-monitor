@@ -217,10 +217,6 @@ as "home PC offline" instead of a generic error.
 
 ## Ask root cause: Pieces cloud account, not this repo (confirmed 2026-08-21, reconfirmed live 2026-08-25)
 
-Salvaged from an unpushed commit on a leftover standalone copy of this app
-(`pieces-android-companion`, since deleted) before that folder was removed — the
-investigation and conclusion below are real and still hold.
-
 `GET /models` on this PiecesOS install returns 99 models, 71 `cloud:true`, and **every
 one shows `downloaded:false`** — there is no working generation backend, cloud or local.
 `POST /model/{id}/download` and `POST /model/{id}/load` both return 200 but never flip
