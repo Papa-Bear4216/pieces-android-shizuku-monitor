@@ -31,13 +31,14 @@ export function startPassiveCaptureListener(): void {
   // Passive captures arrive here already debounced/deduped on the Java side
   // (PiecesAccessibilityService) — this forwards each one into the same
   // usage-event pipeline as a manual "Scan Screen Text" tap.
-  AccessibilityScanner.addListener("passiveCapture", async (data: { package: string; textNodes: string }) => {
+  AccessibilityScanner.addListener("passiveCapture", async (data: { package: string; appLabel: string; textNodes: string }) => {
     const timestamp = new Date().toISOString();
     await recordEvent({
       type: "system_telemetry",
       screen: "background",
       telemetry: `Package: ${data.package}\n\n${data.textNodes}`,
       package: data.package,
+      app_label: data.appLabel,
       timestamp,
     });
     await flushUsageEvents();

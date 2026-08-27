@@ -42,6 +42,7 @@ public class AccessibilityPlugin extends Plugin {
         PiecesAccessibilityService.passiveListener = (packageName, text) -> {
             JSObject data = new JSObject();
             data.put("package", packageName);
+            data.put("appLabel", appLabel);
             data.put("textNodes", text);
             notifyListeners("passiveCapture", data);
         };
