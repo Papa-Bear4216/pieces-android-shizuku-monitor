@@ -194,40 +194,158 @@ export async function seedWorkstreamEvent(piecesBaseUrl: string, readable: strin
 }
 import { createHash } from "node:crypto";
 
-export type TelemetryEvent = {
-  type: "system_telemetry";
-  screen: string;
-  telemetry: string;
-  package?: string;
-  timestamp: string;
+// Packages that are known to be noisy and should not have their screen structure parsed.
+const NOISY_PACKAGES = [
+  "com.android.systemui",
+  "com.google.android.inputmethod.latin", // Gboard
+  "com.samsung.android.honeyboard",        // Samsung keyboard
+  "com.sec.android.inputmethod",           // Samsung keyboard (older)
+  "com.touchtype.swiftkey",                // SwiftKey
+  "com.google.android.googlequicksearchbox" // Google app (includes assistant)
+];
+
+// Matches PiecesAccessibilityService.extractText's "role|text" tagging —
+// role is one of "title" | "button" | "text". Lines that don't match this
+// shape (e.g. dumpsys output from the Shizuku diagnostics path, which has
+// no role tagging at all) fall through untouched to the raw block.
+const ROLE_LINE = /^(title|button|text)\|(.*)$/;
+
+// A text node that looks like a button: short and contains action words.
+function looksLikeButton(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length > 40) return false;
+  const actionWords = ['ok', 'cancel', 'save', 'submit', 'yes', 'no', 'agree', 'done', 'next', 'back', 'close', 'open', 'edit', 'delete', 'add', 'create', 'send', 'search', 'go', 'skip', 'allow', 'deny', 'accept', 'reject', 'install', 'view', 'more', 'less', 'help', 'settings', 'profile', 'sign in', 'log in', 'sign up', 'register'];
+  const lower = trimmed.toLowerCase();
+  return actionWords.some(word => lower.includes(word));
+}
+
+type ScreenStructure = {
+  title: string | null;
+  buttons: string[];
+  text: string[];
 };
 
-export function summarizeTelemetry(event: TelemetryEvent): string {
-  let text = event.telemetry || '';
-  
-  // Truncate to 2000 characters
-  if (text.length > 2000) {
-    text = text.substring(0, 2000) + '... [truncated]';
+function parseScreenStructure(raw: string): ScreenStructure | null {
+  const lines = raw.split("\n");
+  let matchedAny = false;
+  const structure: ScreenStructure = { title: null, buttons: [], text: [] };
+
+  for (const line of lines) {
+    const match = ROLE_LINE.exec(line);
+    if (!match) continue;
+    matchedAny = true;
+    const [, role, value] = match;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (role === "title" && structure.title === null) {
+      structure.title = trimmed;
+    } else if (role === "button") {
+      structure.buttons.push(trimmed);
+    } else if (role === "text" && looksLikeButton(trimmed)) {
+      // If it's tagged as text but looks like a button, promote it to button.
+      structure.buttons.push(trimmed);
+    } else {
+      structure.text.push(trimmed);
+    }
   }
-  
-  // Remove sensitive tokens
-  text = text.replace(/\b[a-zA-Z0-9]{32,}\b/g, '[TOKEN]')
-             .replace(/\bpassword\s*=\s*\S+/gi, 'password=[REDACTED]');
-  
-  // Normalize whitespace
-  text = text.replace(/\s+/g, ' ');
-  
-  // Extract key information
-  const titleMatch = text.match(/title\|(.+)/);
-  const title = titleMatch ? titleMatch[1] : '';
-  
-  // Remove low-value content
-  text = text.split('\n')
-    .filter(line => !line.includes('button|') && line.trim().length > 5)
-    .join('\n');
-  
-  // Add context headers
-  return `Package: ${event.package}\nTitle: ${title}\n\n${text}`;
+
+  return matchedAny ? structure : null;
+}
+
+// Parses raw text that is not in the role-tagged format but has key: value or key=value pairs.
+function parseKeyValuePairs(raw: string): string[] {
+  const lines = raw.split("\n");
+  const pairs = [];
+  for (const line of lines) {
+    const match = line.match(/^([^:]+):\s*(.+)$/) || line.match(/^([^=]+)=(.+)$/);
+    if (match) {
+      const key = match[1].trim();
+      const value = match[2].trim();
+      pairs.push(`- ${key}: ${value}`);
+    }
+  }
+  return pairs;
+}
+
+export function summarizeTelemetry(e: TelemetryEvent): string {
+  if (e.type !== "system_telemetry") {
+    return JSON.stringify(e, null, 2);
+  }
+
+  const packageName = e.package;
+  const appLabel = e.app_label;
+
+  const header = [
+    "AndroidContext v1",
+    `kind: ${e.type}`,
+    `source: shizuku_or_accessibility`,
+    packageName ? `package: ${packageName}` : null,
+    appLabel ? `app_label: ${appLabel}` : null,
+    e.timestamp ? `captured_at: ${e.timestamp}` : null,
+  ].filter(Boolean).join("\n");
+
+  const raw = e.telemetry ?? "";
+  const summaryLines: string[] = [];
+
+  // Best-effort parsing for meminfo dumpsys output (Shizuku diagnostics path
+  // has no role tagging, so this stays a special case rather than folding
+  // into parseScreenStructure).
+  if (raw.includes("Total RAM:") && raw.includes("Free RAM:")) {
+    const totalMatch = raw.match(/Total RAM:\s*(.+)/);
+    const freeMatch = raw.match(/Free RAM:\s*(.+)/);
+    const usedMatch = raw.match(/Used RAM:\s*(.+)/);
+    if (totalMatch) summaryLines.push(`- Total RAM: ${totalMatch[1].trim()}`);
+    if (usedMatch) summaryLines.push(`- Used RAM: ${usedMatch[1].trim()}`);
+    if (freeMatch) summaryLines.push(`- Free RAM: ${freeMatch[1].trim()}`);
+
+    return `${header}\n\nsummary:\n${summaryLines.join("\n")}\n\nraw:\n${raw}`;
+  }
+
+  // Skip screen structure parsing for noisy packages
+  if (packageName && NOISY_PACKAGES.includes(packageName)) {
+    summaryLines.push("- Skipped parsing screen structure for noisy package");
+    return `${header}\n\nsummary:\n${summaryLines.join("\n")}\n\nraw:\n${raw}`;
+  }
+
+  const structure = parseScreenStructure(raw);
+  if (structure) {
+    if (structure.title) summaryLines.push(`- Screen: ${structure.title}`);
+    if (structure.buttons.length > 0) {
+      // Capped and deduped — a scrollable list can repeat the same button
+      // (e.g. "Like", "Reply") dozens of times; the set of distinct actions
+      // available is the useful signal, not the count of each.
+      const distinctButtons = [...new Set(structure.buttons)].slice(0, 20);
+      const remaining = structure.buttons.length - distinctButtons.length;
+      summaryLines.push(`- Available actions: ${distinctButtons.join(", ")}${remaining > 0 ? ` (+${remaining} more)` : ''}`);
+    }
+    if (structure.text.length > 0) {
+      const maxTextLines = 30;
+      const textLines = structure.text.slice(0, maxTextLines);
+      const remaining = structure.text.length - maxTextLines;
+      summaryLines.push(`- Visible text (${structure.text.length} items):`);
+      for (const line of textLines) {
+        summaryLines.push(`  - ${line}`);
+      }
+      if (remaining > 0) {
+        summaryLines.push(`  ... and ${remaining} more`);
+      }
+    }
+    if (summaryLines.length === 0) summaryLines.push("- No labeled content on screen");
+
+    return `${header}\n\nsummary:\n${summaryLines.join("\n")}`;
+  }
+
+  // Try to parse as key-value pairs
+  const keyValueLines = parseKeyValuePairs(raw);
+  if (keyValueLines.length > 0) {
+    summaryLines.push("- Key-value pairs:");
+    summaryLines.push(...keyValueLines);
+    return `${header}\n\nsummary:\n${summaryLines.join("\n")}`;
+  }
+
+  // Fall back to the raw dump
+  summaryLines.push("- Raw telemetry block captured");
+  return `${header}\n\nsummary:\n${summaryLines.join("\n")}\n\nraw:\n${raw}`;
 }
 
 export async function seedToPiecesOS(piecesBaseUrl: string, bodyText: string, title: string): Promise<void> {
