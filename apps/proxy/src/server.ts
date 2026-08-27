@@ -3,7 +3,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { PiecesClient } from "@pieces-android/pieces-api";
 import { findAllowedRoute } from "@pieces-android/allowlist";
-import { isValidBearerToken } from "./auth.js";
+import { isValidBearerToken } from "./auth.ts";
 import { summarizeTelemetry, seedToPiecesOS, seedWorkstreamEvent, TelemetryEvent } from "./seeder.js";
 import { SeedQueue } from "./seed-queue.js";
 import { shouldSeed } from "./surprisal.js";
