@@ -40,6 +40,14 @@ public class AccessibilityPlugin extends Plugin {
         // Capacitor event. Registered once per plugin instance; the service
         // only calls this if passive mode is on (checked on its side too).
         PiecesAccessibilityService.passiveListener = (packageName, text) -> {
+            String appLabel = "";
+            if (!packageName.isEmpty()) {
+                try {
+                    android.content.pm.PackageManager pm = getContext().getPackageManager();
+                    android.content.pm.ApplicationInfo ai = pm.getApplicationInfo(packageName, 0);
+                    appLabel = pm.getApplicationLabel(ai).toString();
+                } catch (android.content.pm.PackageManager.NameNotFoundException ignored) {}
+            }
             JSObject data = new JSObject();
             data.put("package", packageName);
             data.put("appLabel", appLabel);
