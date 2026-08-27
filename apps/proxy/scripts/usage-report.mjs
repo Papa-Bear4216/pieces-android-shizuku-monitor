@@ -7,7 +7,8 @@
 // Same USAGE_LOG_PATH default as apps/proxy/src/server.ts so running this
 // with no arguments reads the live log.
 
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
 const daysFlagIndex = args.indexOf("--days");
@@ -17,65 +18,75 @@ const explicitPath = args.find((a, i) => !a.startsWith("--") && args[i - 1] !== 
 const LOG_PATH =
   explicitPath ?? process.env.USAGE_LOG_PATH ?? `${process.env.USERPROFILE ?? process.env.HOME}\\.claude\\pieces-usage-log.jsonl`;
 
-function parseEvents(raw) {
-  const events = [];
-  for (const line of raw.split("\n")) {
+async function processLog() {
+  const cutoff = days ? Date.now() - days * 24 * 60 * 60 * 1000 : null;
+  let eventCount = 0;
+  const screenCounts = new Map();
+  const askOutcomes = new Map();
+  const asks = [];
+  const searches = [];
+  const setupSaves = [];
+  const maxDetailedEvents = 100;
+
+  const stream = createReadStream(LOG_PATH, { encoding: "utf-8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+
+  for await (const line of rl) {
     if (!line.trim()) continue;
+    let event;
     try {
-      events.push(JSON.parse(line));
+      event = JSON.parse(line);
     } catch {
-      // skip malformed lines rather than aborting the whole report
+      continue;
+    }
+
+    if (cutoff) {
+      const t = new Date(event.timestamp).getTime();
+      if (isNaN(t) || t < cutoff) continue;
+    }
+
+    eventCount++;
+
+    if (event.screen) {
+      screenCounts.set(event.screen, (screenCounts.get(event.screen) || 0) + 1);
+    }
+
+    if (event.type === "ask") {
+      askOutcomes.set(event.result, (askOutcomes.get(event.result) || 0) + 1);
+      if (asks.length < maxDetailedEvents) {
+        asks.push({ timestamp: event.timestamp, query: event.query, result: event.result });
+      }
+    } else if (event.type === "search") {
+      if (searches.length < maxDetailedEvents) {
+        searches.push({ timestamp: event.timestamp, query: event.query, resultCount: event.resultCount });
+      }
+    } else if (event.type === "setup_saved") {
+      if (setupSaves.length < maxDetailedEvents) {
+        setupSaves.push({ timestamp: event.timestamp, mode: event.mode });
+      }
     }
   }
-  return events;
-}
 
-function withinWindow(event, cutoff) {
-  if (!cutoff) return true;
-  const t = new Date(event.timestamp).getTime();
-  return !Number.isNaN(t) && t >= cutoff;
-}
-
-function main(raw) {
-  const cutoff = days ? Date.now() - days * 24 * 60 * 60 * 1000 : null;
-  const events = parseEvents(raw).filter((e) => withinWindow(e, cutoff));
-
-  if (events.length === 0) {
+  if (eventCount === 0) {
     console.log("No usage events" + (days ? ` in the last ${days} day(s).` : "."));
     return;
   }
 
-  const screenCounts = {};
-  const asks = [];
-  const searches = [];
-  const setupSaves = [];
-
-  for (const e of events) {
-    screenCounts[e.screen] = (screenCounts[e.screen] ?? 0) + 1;
-    if (e.type === "ask") asks.push(e);
-    if (e.type === "search") searches.push(e);
-    if (e.type === "setup_saved") setupSaves.push(e);
-  }
-
-  const askOutcomes = asks.reduce((acc, a) => {
-    acc[a.result] = (acc[a.result] ?? 0) + 1;
-    return acc;
-  }, {});
-
   console.log(`Usage report${days ? ` (last ${days} day${days === 1 ? "" : "s"})` : ""}`);
-  console.log(`${events.length} total event(s)\n`);
+  console.log(`${eventCount} total event(s)\n`);
 
   console.log("Screen visits:");
-  for (const [screen, count] of Object.entries(screenCounts).sort((a, b) => b[1] - a[1])) {
+  const sortedScreens = Array.from(screenCounts.entries()).sort((a, b) => b[1] - a[1]);
+  for (const [screen, count] of sortedScreens) {
     console.log(`  ${screen}: ${count}`);
   }
 
-  console.log(`\nAsk: ${asks.length} question(s) asked`);
-  if (asks.length > 0) {
-    for (const [outcome, count] of Object.entries(askOutcomes)) {
+  console.log(`\nAsk: ${askOutcomes.size ? Array.from(askOutcomes.values()).reduce((sum, count) => sum + count, 0) : 0} question(s) asked`);
+  if (askOutcomes.size > 0) {
+    for (const [outcome, count] of askOutcomes.entries()) {
       console.log(`  ${outcome}: ${count}`);
     }
-    if (askOutcomes.unavailable === asks.length) {
+    if (askOutcomes.get("unavailable") === askOutcomes.size) {
       console.log("  Note: every Ask call returned 'unavailable' — this is the known PiecesOS QGPT issue, not a client bug.");
     }
     console.log("  Questions asked:");
@@ -98,8 +109,7 @@ function main(raw) {
 }
 
 try {
-  const raw = await readFile(LOG_PATH, "utf-8");
-  main(raw);
+  await processLog();
 } catch (err) {
   if (err.code === "ENOENT") {
     console.log(`No usage log found at ${LOG_PATH} yet.`);
