@@ -29,6 +29,7 @@ export interface AssetSummary {
   name: string;
   created: string;
   updated: string;
+  content?: string;
 }
 
 export type AskResult =
@@ -141,11 +142,23 @@ export class PiecesClient {
           const assetRes = await this.fetch(`/asset/${id}`, undefined, RELEVANCE_TIMEOUT_MS);
           if (!assetRes.ok) return null;
           const asset = await assetRes.json();
+          let content: string | undefined;
+          // Extract raw string content from asset formats
+          if (asset.formats?.iterable) {
+            for (const format of asset.formats.iterable) {
+              if (format?.fragment?.string?.raw) {
+                content = format.fragment.string.raw;
+                break;
+              }
+            }
+          }
+
           return {
             id: asset.id,
             name: asset.name ?? "(untitled)",
             created: asset.created?.readable ?? asset.created?.value ?? "",
             updated: asset.updated?.readable ?? asset.updated?.value ?? "",
+            content,
           };
         } catch {
           return null;

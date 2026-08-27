@@ -92,7 +92,13 @@ async function gatherContext(pieces: PiecesClient, piecesBaseUrl: string, query:
 
   const assetSnippets = assets
     .slice(0, MAX_ASSET_SNIPPETS)
-    .map((a) => `Asset: ${a.name} (updated ${a.updated})`);
+    .map((a) => {
+      let snippet = `Asset: ${a.name} (updated ${a.updated})`;
+      if (a.content) {
+        snippet += `\n${a.content.slice(0, MAX_SNIPPET_CHARS)}`;
+      }
+      return snippet;
+    });
   return [...assetSnippets, ...events];
 }
 
