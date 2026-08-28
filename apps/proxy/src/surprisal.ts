@@ -24,7 +24,11 @@ import { createHash } from "node:crypto";
 // second point of data loss — an optional quality filter must never
 // silently drop real data when its dependency is down.
 
-const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
+// OLLAMA_BASE_URL is the canonical name (also used by ollama-fallback.ts) —
+// OLLAMA_URL is kept as a fallback so an existing env that only sets the old
+// name still works. Set OLLAMA_BASE_URL and both subsystems point at the same
+// Ollama instance.
+const OLLAMA_URL = process.env.OLLAMA_BASE_URL ?? process.env.OLLAMA_URL ?? "http://127.0.0.1:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_SURPRISAL_MODEL ?? "nomic-embed-text";
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 3000);
 

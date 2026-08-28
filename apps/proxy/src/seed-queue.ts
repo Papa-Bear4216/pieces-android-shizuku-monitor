@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { seedToPiecesOS, seedWorkstreamEvent } from "./seeder.js";
+import { seedToPiecesOS, seedWorkstreamEvent } from "./seeder.ts";
 
 // Durable store for telemetry that failed to seed into PiecesOS (e.g. it was
 // restarting or unreachable) — separate from USAGE_LOG_PATH, which is a
