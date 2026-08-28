@@ -53,7 +53,7 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 if ($Mode -eq "LoggedOutWithPassword") {
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $cred = Get-Credential -Message "Enter your Windows account password - needed so this task can run even when you are logged out"
-    Register-ScheduledTask -TaskName "PiecesAndroidProxy" -Action $action -Trigger $trigger -Settings $settings -User $cred.UserName -Password $cred.GetNetworkCredential().Password -RunLevel Highest -Description "Runs the pieces-android LAN proxy (port 8787) continuously, including while logged out. Required for Plan B (hermes-host gateway) to reach it." -Force
+    Register-ScheduledTask -TaskName "PiecesAndroidProxy" -Action $action -Trigger $trigger -Settings $settings -User $cred.UserName -Password $cred.GetNetworkCredential().Password -RunLevel Highest -Description "Runs the pieces-android LAN proxy (port 8787) continuously, including while logged out. Required for Plan B (remote gateway) to reach it." -Force
 } elseif ($Mode -eq "S4U") {
     $triggerBoot = New-ScheduledTaskTrigger -AtStartup
     $triggerLogon = New-ScheduledTaskTrigger -AtLogOn

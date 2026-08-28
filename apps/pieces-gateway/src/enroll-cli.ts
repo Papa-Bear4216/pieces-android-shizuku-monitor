@@ -10,7 +10,7 @@ if (!JWT_SECRET) {
 
 const label = process.argv[2];
 if (!label) {
-  console.error("Usage: npm run enroll -- \"<device label, e.g. Michael's Pixel>\"");
+  console.error("Usage: npm run enroll -- \"<device label, e.g. My Pixel>\"");
   process.exit(1);
 }
 

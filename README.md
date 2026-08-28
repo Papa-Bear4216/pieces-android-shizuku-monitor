@@ -114,14 +114,14 @@ powershell.exe -ExecutionPolicy Bypass -File "apps\proxy\scripts\register-servic
 Find your PC's LAN IP (`ipconfig`, look for the IPv4 address on your home network
 adapter) — the phone will need `http://<that-ip>:8787` for Plan A (LAN) mode.
 
-## 2. (Optional) Set up Plan B — remote access via hermes-host + Tailscale
+## 2. (Optional) Set up Plan B — remote access via a remote host + Tailscale
 
 Skip this section if LAN-only access is enough for you.
 
 Requirements: a Tailscale account (free tier is fine), and a Linux host reachable from the
 internet with Docker + Caddy already fronting at least one domain (this was built against
-an existing `hermes-host` GCE VM that already ran Caddy for another service — adapt paths
-if yours differs).
+an existing GCE VM that already ran Caddy for another service — adapt paths if yours
+differs).
 
 1. **Join both machines to the same tailnet.** Install Tailscale on the PC running the
    Plan A proxy and on your remote host, then `tailscale up --authkey=<key>` on each

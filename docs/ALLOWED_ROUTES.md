@@ -25,7 +25,7 @@ should re-verify at install time rather than hardcode 39300 blindly (see README)
 
 | Method | Path | Purpose | Evidence |
 |---|---|---|---|
-| GET | `/.well-known/health` | liveness check | `curl` → `ok:29943f30-c772-4530-a0f8-e22071d9e69f` |
+| GET | `/.well-known/health` | liveness check | `curl` → `ok:<instance-uuid>` |
 | GET | `/.well-known/version` | version string | `curl` → `12.5.0` |
 | GET | `/conversations` | list conversations ("Recent") | `curl` → 200, 29549 bytes, real conversation objects (id, name, created, updated, messages.indices) |
 | GET | `/assets` | list assets/snippets | `curl` → 200, 81111 bytes, real asset objects (id, name, creator, created, formats) |
@@ -62,9 +62,9 @@ model's UUID as a path param, no request body). Download is async — the respon
 back immediately with `downloaded: false`, so poll `GET /model/{id}` for `downloaded:
 true` before calling `/load`.
 
-Triggered a live test: `POST /model/6023776a-aea6-4369-8041-e26b690eaddb/download`
-(`qwen3:4b-q4_K_S` — chosen because it's small, fully local, and needs no cloud API key,
-unlike every `cloud: true` entry in the list such as the Claude/GPT/Gemini chat models).
+Triggered a live test: `POST /model/<model-uuid>/download` (a small fully-local model —
+`qwen3:4b-q4_K_S` in this run — chosen because it needs no cloud API key, unlike every
+`cloud: true` entry in the list such as the Claude/GPT/Gemini chat models).
 
 **Download succeeded** — polled `GET /model/{id}` until `downloaded: true` (confirmed,
 persists across calls). **`POST /model/{id}/load` then failed with HTTP 500**:
@@ -99,7 +99,7 @@ afterward with real evidence, not assumptions:**
 | `/qgpt/relevance`, `options.database:true, options.question:true` | Still 500 `"qGPT Relevance Endpoint failed."` |
 | `/qgpt/question` (direct), empty `relevant.iterable`, no `model` | Still 500 `"qGPT Question Endpoint failed."` |
 | `/qgpt/question`, explicit `model` = a random unloaded local model ID | Still 500 (expected — bad test, that model genuinely isn't loaded) |
-| `/qgpt/question`, explicit `model` = `a737e3fb-3673-4872-90c1-c8ad70c88099` (`Claude 4.5 Sonnet Chat Model`, a `cloud:true` model matching what the working desktop chat UI uses) | **Still 500**, identical error |
+| `/qgpt/question`, explicit `model` = a valid `cloud:true` chat-model UUID (`Claude 4.5 Sonnet Chat Model`, matching what the working desktop chat UI uses) | **Still 500**, identical error |
 
 **Revised conclusion:** the 12.6.0 update fixed the *relevance/search* half of Ask
 (database-scoped semantic search over assets — genuinely useful on its own for e.g. a
@@ -180,8 +180,8 @@ per the frozen architecture (read-only Ask/Recent/Status client only).
 
 ## Plan B: remote gateway (2026-07-26)
 
-Plan B adds a second entry point — `apps/pieces-gateway`, running on hermes-host, fronted
-by Caddy at `https://pieces.dysfunctionjunction.xyz` — that reaches the same PC over
+Plan B adds a second entry point — `apps/pieces-gateway`, running on a remote host you
+control, fronted by Caddy at `https://pieces.example.com` — that reaches the same PC over
 Tailscale instead of requiring the phone to be on the home LAN. It imports the exact same
 `packages/allowlist` module as the Plan A proxy, so this table is still the single source
 of truth for what's allowed; nothing new was added to the allowlist for Plan B, only a new
@@ -193,7 +193,7 @@ path to reach it.
   (`apps/pieces-gateway/src/device-registry.ts`) on every request — a stateless JWT alone
   cannot be revoked, so the registry is the actual security boundary here, not token expiry.
 - Gateway → home proxy: the same Plan A bearer token, sent over Tailscale to the PC's
-  tailnet IP. This value lives in a `.env` file on hermes-host only (`chmod 600`, never
+  tailnet IP. This value lives in a `.env` file on the remote host only (`chmod 600`, never
   committed) — see `HOME_PROXY_TOKEN` in `apps/pieces-gateway/src/server.ts`.
 
 **Fail-closed, proven twice:** both the Plan A proxy and the gateway apply a 5-second
@@ -201,12 +201,11 @@ path to reach it.
 rather than hanging. Verified by literally stopping the Plan A proxy and confirming the
 gateway 503s in ~5s over the real deployed HTTPS path — see `docs/ACCEPTANCE.md`.
 
-**DNS**: `pieces.dysfunctionjunction.xyz` is an A record → `34.73.193.94` (hermes-host),
-added via `vercel dns add` (DNS for this domain is on Vercel, under org
-`team_18dH8QMMrUG3oXRNjbX9sSCq`, a different scope than the default CLI login — pass
-`--scope team_18dH8QMMrUG3oXRNjbX9sSCq` explicitly if `vercel dns` commands 403). Caddy
-issued a real Let's Encrypt cert for this hostname on first run — confirmed via
-`certificate obtained successfully` in `docker logs hermes-bridge-caddy-1`.
+**DNS**: `pieces.example.com` is an A record → `<remote-host-ip>`, added via your DNS
+provider (this build used `vercel dns add`; note Vercel scopes DNS per-team, so pass
+`--scope <team-id>` explicitly if `vercel dns` commands 403). Caddy issues a real Let's
+Encrypt cert for this hostname on first run — confirm via `certificate obtained
+successfully` in `docker logs <caddy-container>`.
 
 **Known gap**: no code changes were needed in the mobile app's request logic for Plan B —
 both the proxy and gateway expose the identical `/mobile/*` surface and bearer-token auth
@@ -215,28 +214,28 @@ address/token. What did need updating: Setup's copy (now describes both LAN and 
 modes) and a new `HomeNodeUnreachableError` in `apps/mobile/src/lib/api.ts` so a 503 shows
 as "home PC offline" instead of a generic error.
 
-## Ask root cause: Pieces cloud account, not this repo (confirmed 2026-08-21, reconfirmed live 2026-08-25)
+## Ask root cause: Pieces cloud account state, not this repo (confirmed 2026-08-21, reconfirmed live 2026-08-25)
 
-`GET /models` on this PiecesOS install returns 99 models, 71 `cloud:true`, and **every
-one shows `downloaded:false`** — there is no working generation backend, cloud or local.
-`POST /model/{id}/download` and `POST /model/{id}/load` both return 200 but never flip
-`downloaded` to `true` for a cloud model. Live `ws://127.0.0.1:39300/qgpt/stream` with an
-explicit model id fails with a bare `"InternalServerError"` once past the "model not
-found" stage — a genuine server-side failure, not a request-shape problem on this repo's
-side.
+On the install this was built against, `GET /models` returned ~99 models, most
+`cloud:true`, and **every one showed `downloaded:false`** — no working generation
+backend, cloud or local. `POST /model/{id}/download` and `POST /model/{id}/load` both
+returned 200 but never flipped `downloaded` to `true` for a cloud model. Live
+`ws://127.0.0.1:39300/qgpt/stream` with an explicit model id failed with a bare
+`"InternalServerError"` once past the "model not found" stage — a genuine server-side
+failure, not a request-shape problem on this repo's side.
 
-`GET /user`'s `allocation.urls` block is the actual root cause:
+`GET /user`'s `allocation.urls` block was the actual root cause on this account:
 ```
 "urls": {
   "base":   { "status": "RUNNING", "url": "https://user-<id>-....run.app" },
   "id":     { "status": "FAILED",  "url": "https://<id>.pieces.cloud" },
-  "vanity": { "status": "FAILED",  "url": "https://dysfunctionjunction.pieces.cloud" }
+  "vanity": { "status": "FAILED",  "url": "https://<vanity>.pieces.cloud" }
 }
 ```
-Two of three cloud allocation endpoints are stuck `FAILED`; only `base` is `RUNNING`.
-Reconfirmed live on 2026-08-25 — same two endpoints still `FAILED`, `updated` timestamp
-shows the account state is actively synced (not a stale cache), so this has not
-self-resolved in the four days since.
+Two of three cloud allocation endpoints stuck `FAILED`; only `base` `RUNNING`. Reconfirmed
+live on 2026-08-25 — still `FAILED`, with the `updated` timestamp showing active account
+sync (not a stale cache), so it had not self-resolved. If you hit a broken Ask path, check
+`GET /user` → `allocation.urls` for the same pattern.
 
 **Do not build a workaround for this in this repo.** `PiecesClient.ask()` already does
 the correct thing — surfaces a typed `"unavailable"` result with a clear reason instead

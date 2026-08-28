@@ -75,10 +75,8 @@ directly this run. ⚠️ = observed, but with a caveat worth reading before rel
 
 - ✅ Proxy registered as a Windows Scheduled Task (`PiecesAndroidProxy`), mode `S4U`
   (`LogonType: S4U`, confirmed via `(Get-ScheduledTask ...).Principal`) — runs at boot AND
-  logon with no stored password. Chosen specifically because the Windows account is
-  intentionally passwordless (a prior unauthorized-access incident is why) — the
-  alternative ("run whether logged on or not" with a real stored password) was
-  deliberately rejected, not just deferred.
+  logon with no stored password. Use S4U if the Windows account has no password; the
+  alternative ("run whether logged on or not") requires storing a real password.
 - ✅ Firewall rule applied: TCP 8787, Private profile only, confirmed active (adapter's
   `NetworkCategory` is `Private`).
 - ⚠️ **Not yet proven**: whether S4U actually survives a genuinely unattended reboot (PC
@@ -91,38 +89,32 @@ directly this run. ⚠️ = observed, but with a caveat worth reading before rel
 
 ## Plan B: full run (2026-07-26)
 
-Ran against the real deployed stack — hermes-host's live Caddy/Docker/Tailscale, not a
+Ran against a real deployed stack — a remote host's live Caddy/Docker/Tailscale, not a
 simulation. Every item below was actually executed.
 
 - ✅ Tailscale joined on both ends with no prior setup existing (`tailscale up
-  --authkey=...`), confirmed via `tailscale status` showing all 3 devices (PC, hermes-host,
+  --authkey=...`), confirmed via `tailscale status` showing all 3 devices (PC, remote host,
   phone) on the same tailnet.
-- ✅ **Gate test**: `curl http://<pc-tailnet-ip>:8787/mobile/health` from hermes-host →
+- ✅ **Gate test**: `curl http://<pc-tailnet-ip>:8787/mobile/health` from the remote host →
   `{"ok":true}` HTTP 200, before any gateway code was written.
-- ✅ Container DNS/ACME check: `docker exec hermes-bridge-caddy-1 wget ... letsencrypt.org`
-  succeeded — the `127.0.0.53:53` DNS failure noted in HANDOFF.md is not currently
-  reproducing.
+- ✅ Container DNS/ACME check: `docker exec <caddy-container> wget ... letsencrypt.org`
+  succeeded.
 - ✅ `packages/allowlist` extracted from `apps/proxy` into a real shared package (moved, not
   copied) — both the proxy and pieces-gateway import the same module, confirmed by grep.
-- ✅ `pieces-gateway` built and deployed as a new Docker service on hermes-host, alongside
-  (not replacing) `hermes-bridge` and `caddy`. Verified `hermes-bridge`'s existing route
-  (`https://hermes.dysfunctionjunction.xyz` → HTTP 401, matching its known-healthy state)
-  was unaffected by the deploy.
+- ✅ `pieces-gateway` built and deployed as a new Docker service on the remote host,
+  alongside (not replacing) any existing services. Verified an existing unrelated route on
+  the same Caddy was unaffected by the deploy.
 - ✅ **Bug caught and fixed during deploy**: pieces-gateway initially bound to
   `127.0.0.1` inside its container (copy-pasted from local bare-metal testing) — Caddy
   couldn't reach it over the compose network. Fixed to `0.0.0.0`, confirmed via
-  `docker exec hermes-bridge-caddy-1 wget http://pieces-gateway:8788/mobile/health` →
+  `docker exec <caddy-container> wget http://pieces-gateway:8788/mobile/health` →
   `{"ok":true}` before touching Caddy's own config.
-- ✅ DNS: `pieces.dysfunctionjunction.xyz` A record added via `vercel dns add` (see
-  ALLOWED_ROUTES.md for the scope gotcha), confirmed resolving via `nslookup ... 8.8.8.8`.
+- ✅ DNS: `pieces.example.com` A record added via the DNS provider, confirmed resolving via
+  `nslookup ... 8.8.8.8`.
 - ✅ TLS: Caddy obtained a real Let's Encrypt cert for the new hostname on first restart —
-  `"certificate obtained successfully","identifier":"pieces.dysfunctionjunction.xyz"` in
-  its logs. (Unrelated pre-existing cert failures for `dysfunctionjunction.xyz` bare domain
-  and `bear-house-classic.vercel.app` also appear in the same logs — those domains don't
-  point at hermes-host's IP for HTTP-01 challenges and were failing before this change too;
-  not something this work introduced or needs to fix.)
+  `"certificate obtained successfully"` in its logs.
 - ✅ **Full chain, real internet path**: `curl -H "Authorization: Bearer <jwt>"
-  https://pieces.dysfunctionjunction.xyz/mobile/status/health` → `ok:29943f30-...` HTTP
+  https://pieces.example.com/mobile/status/health` → `ok:<instance-uuid>` HTTP
   200 — Caddy TLS → gateway JWT auth → Tailscale → PC's Plan A proxy → PiecesOS → back,
   entirely over the public internet with zero inbound ports opened on the home network.
 - ✅ Auth enforcement over the real path: no-token request → 401; non-allowlisted route
@@ -140,6 +132,6 @@ simulation. Every item below was actually executed.
   `HomeNodeUnreachableError` handling to Setup/Status/Recent/Ask and updating Setup's copy
   for the two connection modes.
 - ⬜ Not yet run: installing the rebuilt APK on a real phone and testing Setup/Ask/Status/
-  Recent against `https://pieces.dysfunctionjunction.xyz` from an actual off-LAN network
+  Recent against `https://pieces.example.com` from an actual off-LAN network
   (e.g. phone on cellular data, not Wi-Fi). Everything above was curl-verified, not
   phone-verified.

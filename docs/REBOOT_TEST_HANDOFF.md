@@ -1,6 +1,6 @@
 # Reboot test — proxy auto-start verification
 
-Context for whoever (Claude or Michael) picks this up.
+Context for whoever picks this up.
 
 ## Status: CONFIRMED WORKING (2026-07-30)
 
@@ -21,9 +21,9 @@ wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
 
 **Round 1 reboot**: task fired (`LastRunTime` ~14s after boot,
 `LastTaskResult: 0`), but the proxy wasn't listening on 8787 afterward. A
-node process was running, but turned out to be an unrelated tool
-(`openclaw gateway --port 18789`), not the proxy at all — the actual proxy
-process was never present. `service-wrapper.ps1` had zero output capture,
+node process was running, but turned out to be an unrelated tool on a
+different port, not the proxy at all — the actual proxy process was never
+present. `service-wrapper.ps1` had zero output capture,
 so there was no way to see why it failed silently at boot.
 
 **Fix**: rewrote `apps/proxy/scripts/service-wrapper.ps1` (commit
