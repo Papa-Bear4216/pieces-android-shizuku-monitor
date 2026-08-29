@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { Agent, setGlobalDispatcher } from "undici";
 import { PiecesClient } from "@pieces-android/pieces-api";
 import { findAllowedRoute } from "@pieces-android/allowlist";
 import { isValidBearerToken } from "./auth.ts";
@@ -26,6 +27,15 @@ async function addToMem0(content: string) {
     console.warn("Failed to save to Mem0", e);
   }
 }
+
+// Observed in practice (2026-08-29): a pooled keep-alive socket to PiecesOS
+// occasionally dies without either side sending FIN/RST (UND_ERR_SOCKET
+// "other side closed" surfaced from a workstream-event seed call), and
+// undici's default keep-alive tries to reuse it anyway. A short
+// keepAliveTimeout forces a fresh socket often enough that a dead one is
+// very unlikely to still be sitting in the pool when the next request goes
+// out. See the matching fix + longer writeup in apps/pieces-gateway/src/server.ts.
+setGlobalDispatcher(new Agent({ keepAliveTimeout: 4000, keepAliveMaxTimeout: 4000 }));
 
 const UPSTREAM_TIMEOUT_MS = 5000;
 // PiecesOS's /assets does a real store scan that scales with asset count —
@@ -365,8 +375,12 @@ const server = createServer(async (req, res) => {
     // seconds on a non-trivial asset count — 5s was tight enough to
     // routinely time out a request PiecesOS was about to complete
     // successfully (observed: consistent ~5.3s, PiecesOS itself returning
-    // 200). Other routes stay on the tighter default.
-    const timeoutMs = route.piecesPath === "/assets" ? ASSETS_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
+    // 200). /assets/search (recent/search's target) does the same kind of
+    // real scan over the same growing asset count and was still on the
+    // tighter default until 2026-08-29's route sweep caught it — same class
+    // of bug as the gateway's flat timeout, just one layer in. Other routes
+    // stay on the tighter default.
+    const timeoutMs = route.piecesPath === "/assets" || route.piecesPath === "/assets/search" ? ASSETS_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
     const piecesRes = await fetch(target, { signal: AbortSignal.timeout(timeoutMs) });
     const text = await piecesRes.text();
     res.writeHead(piecesRes.status, {

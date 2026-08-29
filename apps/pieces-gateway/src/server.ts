@@ -1,6 +1,19 @@
 import { createServer } from "node:http";
+import { Agent, setGlobalDispatcher } from "undici";
 import { findAllowedRoute } from "@pieces-android/allowlist";
 import { verifyToken } from "./jwt.js";
+
+// Observed in practice: a pooled keep-alive socket to the home proxy over
+// Tailscale gets silently dropped (NAT/WireGuard idle timeout) without
+// either side sending a FIN/RST. undici's default keep-alive behavior then
+// tries to reuse that dead socket on the next fetch(), gets no response,
+// and burns the full UPSTREAM_TIMEOUT_MS before failing - even though a
+// FRESH connection to the exact same address succeeds in well under a
+// second. This produced an intermittent 200/200/503 pattern that looked
+// like a flaky tunnel but was actually a stale-socket-reuse bug. A short
+// keepAliveTimeout forces undici to open a new socket well before Tailscale
+// has a chance to drop the old one silently underneath it.
+setGlobalDispatcher(new Agent({ keepAliveTimeout: 4000, keepAliveMaxTimeout: 4000 }));
 
 const PORT = Number(process.env.GATEWAY_PORT ?? 8788);
 // Home PC's Tailscale IP, not its LAN IP - this gateway runs on a remote host
@@ -12,11 +25,34 @@ const HOME_PROXY_BASE_URL = process.env.HOME_PROXY_BASE_URL;
 // remote host's compose env only.
 const HOME_PROXY_TOKEN = process.env.HOME_PROXY_TOKEN;
 const JWT_SECRET = process.env.GATEWAY_JWT_SECRET;
-// The Plan A proxy itself allows up to 20s for /assets (a real DB scan that
-// can legitimately take several seconds) — this gateway sits in front of it
-// and must allow at least as long, or it kills a request the proxy was
-// about to complete successfully.
+// Default for routes with no documented worst case of their own. Several
+// routes need MORE than this - see ROUTE_TIMEOUT_MS_OVERRIDES below. A flat
+// 20s ceiling here previously killed slower routes before the proxy/PiecesOS
+// even got a chance to finish - a real Plan B regression vs. Plan A, found
+// 2026-08-29 while sweeping every route end to end. Each override's timeout
+// tracks a specific documented ceiling elsewhere in the codebase - if that
+// ceiling changes, this must change with it, or the bug just found comes
+// back for that one route.
 const UPSTREAM_TIMEOUT_MS = 20000;
+const ROUTE_TIMEOUT_MS_OVERRIDES: Array<{ test: (method: string, pathname: string) => boolean; timeoutMs: number }> = [
+  // ASSETS_TIMEOUT_MS in apps/proxy/src/server.ts is 30s (a real store scan
+  // that scales with asset count).
+  { test: (m, p) => m === "GET" && p === "/mobile/recent/assets", timeoutMs: 35000 },
+  // /assets/search (recent/search's target) got the same ASSETS_TIMEOUT_MS
+  // treatment as /assets itself on 2026-08-29 - same store, same scaling.
+  { test: (m, p) => m === "GET" && p === "/mobile/recent/search", timeoutMs: 35000 },
+  // ASK_CLIENT_FETCH_TIMEOUT_MS in apps/mobile/src/lib/api.ts is 100s,
+  // covering the Ollama fallback path (measured 24-64s in practice).
+  { test: (m, p) => m === "POST" && p === "/mobile/ask", timeoutMs: 105000 },
+  // SUMMARIES_CLIENT_FETCH_TIMEOUT_MS in apps/mobile/src/lib/api.ts is 30s -
+  // measured fast in practice (0.4s for 21 summaries) but that measurement
+  // was against an unusually low PIECES_BASE_URL round-trip; give the same
+  // headroom the client itself already assumes.
+  { test: (m, p) => m === "GET" && p === "/mobile/summaries", timeoutMs: 32000 },
+];
+function upstreamTimeoutFor(method: string, pathname: string): number {
+  return ROUTE_TIMEOUT_MS_OVERRIDES.find((r) => r.test(method, pathname))?.timeoutMs ?? UPSTREAM_TIMEOUT_MS;
+}
 
 if (!JWT_SECRET) {
   console.error("GATEWAY_JWT_SECRET is not set. Refusing to start.");
@@ -90,7 +126,15 @@ const server = createServer(async (req, res) => {
   const isUsageReport = method === "POST" && url.pathname === "/mobile/usage-report";
   const isAssetFetch = method === "GET" && url.pathname.startsWith("/mobile/asset/");
   const isConversationFetch = method === "GET" && url.pathname.startsWith("/mobile/conversation/") && url.pathname.endsWith("/messages");
-  const route = isAsk || isRelevantSearch || isUsageReport || isAssetFetch || isConversationFetch ? { piecesPath: "" } : findAllowedRoute(method, url.pathname);
+  // Same reasoning as isRelevantSearch: /mobile/summaries has no PiecesOS
+  // path of its own (the home proxy's summaries.ts does annotation
+  // hydration + SUMMARY-vs-profile filtering server-side) - a plain GET
+  // passthrough to the home proxy, no special body handling needed. Missing
+  // this case was a real gap (not present in the original Plan B port) -
+  // the Recent ("What Got Done") tab 404'd over the gateway even though it
+  // worked fine on Plan A's direct LAN connection.
+  const isSummaries = method === "GET" && url.pathname === "/mobile/summaries";
+  const route = isAsk || isRelevantSearch || isUsageReport || isAssetFetch || isConversationFetch || isSummaries ? { piecesPath: "" } : findAllowedRoute(method, url.pathname);
 
   if (!route) {
     // Deny-by-default: same allowlist module as Plan A. Anything not listed
@@ -104,7 +148,7 @@ const server = createServer(async (req, res) => {
     const upstreamReq: RequestInit = {
       method,
       headers: { Authorization: `Bearer ${HOME_PROXY_TOKEN}` },
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      signal: AbortSignal.timeout(upstreamTimeoutFor(method, url.pathname)),
     };
     if (isAsk || isUsageReport) {
       upstreamReq.body = req;
@@ -142,3 +186,25 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`pieces-gateway listening on 0.0.0.0:${PORT} (reached via Caddy over the compose network, not published to the internet directly)`);
   console.log(`forwarding to home proxy at ${HOME_PROXY_BASE_URL}`);
 });
+
+// Tailscale needs to (re-)establish its direct WireGuard path/NAT punch to
+// the home node after this process (re)starts - observed in practice as the
+// FIRST real request timing out at the full UPSTREAM_TIMEOUT_MS even though
+// every request after it is fast (a few hundred ms). Rather than let a real
+// user request pay that cost, fire an unauthenticated warm-up ping against
+// the home proxy's own /mobile/health at startup - result doesn't matter
+// (logged only), this exists purely to wake the tunnel up early.
+async function warmUpHomeProxyConnection() {
+  const target = new URL("/mobile/health", HOME_PROXY_BASE_URL);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(target, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
+      console.log(`[warmup] home proxy reachable (attempt ${attempt}, HTTP ${res.status})`);
+      return;
+    } catch (err) {
+      console.warn(`[warmup] home proxy not yet reachable (attempt ${attempt}/3): ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  console.warn("[warmup] gave up after 3 attempts - first real request may still pay the cold-start cost");
+}
+warmUpHomeProxyConnection();

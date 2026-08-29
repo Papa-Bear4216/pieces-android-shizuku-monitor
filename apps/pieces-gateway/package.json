@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@pieces-android/allowlist": "file:../../packages/allowlist",
-    "jsonwebtoken": "^9.0.3"
+    "jsonwebtoken": "^9.0.3",
+    "undici": "^8.10.0"
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.7",

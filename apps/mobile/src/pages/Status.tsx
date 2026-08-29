@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { getStatus, ProxyNotConfiguredError, HomeNodeUnreachableError } from "../lib/api";
+import { getStatus, getCachedStatus, ProxyNotConfiguredError, HomeNodeUnreachableError } from "../lib/api";
 import { recordEvent } from "../lib/usage";
 import { flushUsageEvents } from "../lib/flush";
 import { isShizukuToolkitEnabled, isScreenContextEnabled } from "../lib/config";
@@ -21,7 +21,7 @@ type State =
   | { kind: "loading" }
   | { kind: "ok"; health: string; version: string }
   | { kind: "not-configured" }
-  | { kind: "home-offline"; message: string }
+  | { kind: "home-offline"; message: string; stale?: { health: string; version: string; at: string } }
   | { kind: "error"; message: string };
 
 type AppEntry = { packageName: string; label: string; isSystemApp: boolean; category: string };
@@ -54,7 +54,12 @@ export default function Status() {
       if (err instanceof ProxyNotConfiguredError) {
         setState({ kind: "not-configured" });
       } else if (err instanceof HomeNodeUnreachableError) {
-        setState({ kind: "home-offline", message: err.message });
+        const cached = await getCachedStatus();
+        setState({
+          kind: "home-offline",
+          message: err.message,
+          stale: cached ? { ...cached.value, at: cached.at } : undefined,
+        });
       } else {
         setState({ kind: "error", message: err instanceof Error ? err.message : String(err) });
       }
@@ -228,6 +233,12 @@ export default function Status() {
         <>
           <p className="status-error">Home PC is offline or unreachable. {state.message}</p>
           <button onClick={load}>Retry</button>
+
+          {state.stale && (
+            <p className="hint" style={{ marginTop: 12 }}>
+              Last known: PiecesOS {state.stale.version}, as of {new Date(state.stale.at).toLocaleString()}.
+            </p>
+          )}
         </>
       )}
 

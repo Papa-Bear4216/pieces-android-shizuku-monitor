@@ -7,9 +7,13 @@
 # watch and LastTaskResult=0 only reflects powershell.exe's own exit code,
 # not whether npx/tsx actually started the server successfully.
 
-$ProxyDir = "C:\Users\micha\OneDrive\Desktop\projects\pieces-android\apps\proxy"
+# $PSScriptRoot is this file's own directory (apps/proxy/scripts) - deriving
+# ProxyDir from it instead of a hardcoded absolute path means this script
+# works from any checkout location/username, not just the one it was
+# originally written on.
+$ProxyDir = Split-Path -Parent $PSScriptRoot
 $TokenFile = Join-Path $ProxyDir ".bearer-token"
-$LogFile = "C:\Users\micha\.claude\pieces-proxy-service.log"
+$LogFile = Join-Path $env:USERPROFILE ".claude\pieces-proxy-service.log"
 
 New-Item -ItemType Directory -Force -Path (Split-Path $LogFile) | Out-Null
 
@@ -27,12 +31,38 @@ if (-not (Test-Path $TokenFile)) {
 $token = (Get-Content $TokenFile -Raw).Trim()
 $env:PROXY_BEARER_TOKEN = $token
 
-try {
-    Set-Location $ProxyDir
-    "PWD after Set-Location: $(Get-Location)" | Out-File -FilePath $LogFile -Append
-    npx tsx src/server.ts *>> $LogFile
-    "=== $(Get-Date -Format o) npx tsx exited with code $LASTEXITCODE ===" | Out-File -FilePath $LogFile -Append
-} catch {
-    "EXCEPTION: $($_ | Out-String)" | Out-File -FilePath $LogFile -Append
-    exit 1
+Set-Location $ProxyDir
+"PWD after Set-Location: $(Get-Location)" | Out-File -FilePath $LogFile -Append
+
+# Restart-on-crash loop: a Scheduled Task only restarts if THIS wrapper
+# process exits, but "this wrapper exits" is not the same event as "npx tsx
+# crashed underneath it" - npx spawns node as a child and the wrapper can
+# keep running past a child crash. Looping here catches every crash
+# immediately instead of waiting for the task's own retry policy.
+# Backoff avoids hammering restart attempts if something is fatally broken
+# (e.g. a bad code change) - caps at 60s so a real recovery still comes back
+# reasonably fast.
+$backoffSeconds = 2
+while ($true) {
+    "=== $(Get-Date -Format o) launching npx tsx ===" | Out-File -FilePath $LogFile -Append
+    $start = Get-Date
+    try {
+        npx tsx src/server.ts *>> $LogFile
+        $exitCode = $LASTEXITCODE
+    } catch {
+        "EXCEPTION: $($_ | Out-String)" | Out-File -FilePath $LogFile -Append
+        $exitCode = 1
+    }
+    $ranFor = (Get-Date) - $start
+    "=== $(Get-Date -Format o) npx tsx exited with code $exitCode after $($ranFor.TotalSeconds)s ===" | Out-File -FilePath $LogFile -Append
+
+    # A clean, long-lived run resets backoff; a fast crash-loop escalates it.
+    if ($ranFor.TotalSeconds -gt 60) {
+        $backoffSeconds = 2
+    } else {
+        $backoffSeconds = [Math]::Min($backoffSeconds * 2, 60)
+    }
+
+    "Restarting in ${backoffSeconds}s..." | Out-File -FilePath $LogFile -Append
+    Start-Sleep -Seconds $backoffSeconds
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   getWorkstreamSummaries,
+  getCachedWorkstreamSummaries,
   ProxyNotConfiguredError,
   HomeNodeUnreachableError,
   type WorkstreamSummary,
@@ -13,7 +14,7 @@ type State =
   | { kind: "loading" }
   | { kind: "loaded"; summaries: WorkstreamSummary[] }
   | { kind: "not-configured" }
-  | { kind: "home-offline"; message: string }
+  | { kind: "home-offline"; message: string; stale?: { summaries: WorkstreamSummary[]; at: string } }
   | { kind: "error"; message: string };
 
 export default function Recent() {
@@ -30,7 +31,12 @@ export default function Recent() {
       if (err instanceof ProxyNotConfiguredError) {
         setState({ kind: "not-configured" });
       } else if (err instanceof HomeNodeUnreachableError) {
-        setState({ kind: "home-offline", message: err.message });
+        const cached = await getCachedWorkstreamSummaries();
+        setState({
+          kind: "home-offline",
+          message: err.message,
+          stale: cached ? { summaries: cached.value, at: cached.at } : undefined,
+        });
       } else {
         setState({ kind: "error", message: err instanceof Error ? err.message : String(err) });
       }
@@ -61,6 +67,24 @@ export default function Recent() {
         <>
           <p className="status-error">Home PC is offline or unreachable. {state.message}</p>
           <button onClick={load}>Retry</button>
+
+          {state.stale && (
+            <>
+              <p className="hint" style={{ marginTop: 16 }}>
+                Showing the last synced copy from {new Date(state.stale.at).toLocaleString()}:
+              </p>
+              <ul>
+                {state.stale.summaries.map((s) => (
+                  <li key={s.id} style={{ marginBottom: 12, border: "1px solid #444", padding: 12, borderRadius: 8, opacity: 0.7 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <strong>{s.name}</strong>
+                      <span style={{ color: "#888", fontSize: 12 }}>{s.created}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </>
       )}
 

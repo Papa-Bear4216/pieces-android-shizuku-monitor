@@ -1,3 +1,4 @@
+import { Preferences } from "@capacitor/preferences";
 import { getProxyBaseUrl, getProxyToken } from "./config";
 
 export class ProxyNotConfiguredError extends Error {
@@ -85,6 +86,63 @@ export type AskResult =
   | { status: "answered"; answers: unknown }
   | { status: "unavailable"; reason: string; likelyNoModelConfigured?: boolean };
 
+// One retry, after a short delay, specifically for HomeNodeUnreachableError.
+// Real, reproducible cause: right after the gateway process restarts,
+// Tailscale needs to re-establish its direct path to the home PC - the
+// FIRST request in that window can take the full upstream timeout and fail,
+// while every request after it is fast (sub-second in testing, 2026-08-29).
+// A startup warm-up ping on the gateway itself covers most of this, but a
+// client-side retry is the backstop for whatever window it doesn't catch
+// (e.g. the phone's own request racing the warm-up). Retries only ONE time
+// and only for this specific error - a real "PC is off" case still surfaces
+// normally after the retry also fails, rather than hanging or looping.
+//
+// Deliberately NOT applied to ask() - its own client timeout is already
+// 100s (ASK_CLIENT_FETCH_TIMEOUT_MS, covering the Ollama fallback path), so
+// stacking a full retry on top would make the worst case ~205s before the
+// user sees anything. A slow-but-generous single attempt beats doubling an
+// already-long wait; the user's own Retry button covers the rare case where
+// Ask specifically hits the restart window. Applied only to the fast routes
+// (status ~10s, summaries ~30s) where a second attempt stays reasonable.
+const HOME_UNREACHABLE_RETRY_DELAY_MS = 5000;
+async function withHomeUnreachableRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (!(err instanceof HomeNodeUnreachableError)) throw err;
+    await new Promise((resolve) => setTimeout(resolve, HOME_UNREACHABLE_RETRY_DELAY_MS));
+    return await fn();
+  }
+}
+
+// Lightweight "last known good" cache for screens where stale-but-real data
+// beats a blank error screen during a transient home-offline blip (e.g. the
+// PC briefly asleep, a router hiccup). Never used to mask errors — callers
+// still see the fresh call's outcome; this only supplies a fallback value
+// alongside it. Preferences (not localStorage/memory) so it survives an app
+// restart, not just a screen navigation.
+const CACHE_KEY_PREFIX = "pieces-android:cache:";
+
+async function readCache<T>(key: string): Promise<{ value: T; at: string } | null> {
+  try {
+    const { value } = await Preferences.get({ key: CACHE_KEY_PREFIX + key });
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCache<T>(key: string, value: T): Promise<void> {
+  try {
+    await Preferences.set({
+      key: CACHE_KEY_PREFIX + key,
+      value: JSON.stringify({ value, at: new Date().toISOString() }),
+    });
+  } catch {
+    // Best-effort - a failed cache write should never break the real call.
+  }
+}
+
 /** Unauthenticated liveness check — safe to call before Setup is complete. */
 export async function checkProxyHealth(baseUrl: string): Promise<boolean> {
   try {
@@ -99,7 +157,12 @@ export async function checkProxyHealth(baseUrl: string): Promise<boolean> {
   }
 }
 
-export async function getStatus(): Promise<{ health: string; version: string }> {
+export interface StatusResult {
+  health: string;
+  version: string;
+}
+
+async function getStatusUncached(): Promise<StatusResult> {
   const [healthRes, versionRes] = await Promise.all([
     authedFetch("/mobile/status/health"),
     authedFetch("/mobile/status/version"),
@@ -107,6 +170,25 @@ export async function getStatus(): Promise<{ health: string; version: string }> 
   if (!healthRes.ok) throw new Error(`Status health check failed: HTTP ${healthRes.status}`);
   if (!versionRes.ok) throw new Error(`Status version check failed: HTTP ${versionRes.status}`);
   return { health: await healthRes.text(), version: await versionRes.text() };
+}
+
+/**
+ * The real end-to-end check: this round-trips through proxy/gateway all the
+ * way to PiecesOS and back, unlike checkProxyHealth (which only proves the
+ * gateway process itself answers). Setup's "Connected" and Status's own
+ * display both use this - a gateway that's up but can't reach PiecesOS is
+ * NOT "connected" from the user's point of view, even though the earlier
+ * unauthenticated health check would say otherwise.
+ */
+export async function getStatus(): Promise<StatusResult> {
+  const result = await withHomeUnreachableRetry(getStatusUncached);
+  await writeCache("status", result);
+  return result;
+}
+
+/** Last successful getStatus() result, if any - for a stale-data fallback display. */
+export async function getCachedStatus(): Promise<{ value: StatusResult; at: string } | null> {
+  return readCache<StatusResult>("status");
 }
 
 export interface WorkstreamSummary {
@@ -122,11 +204,22 @@ export interface WorkstreamSummary {
  * DESCRIPTION) annotation only; the broader HIERARCHICAL_PROFILE_SUMMARY
  * annotation every summary also carries never reaches this client.
  */
-export async function getWorkstreamSummaries(): Promise<WorkstreamSummary[]> {
+async function getWorkstreamSummariesUncached(): Promise<WorkstreamSummary[]> {
   const res = await authedFetch("/mobile/summaries");
   if (!res.ok) throw new Error(`Summaries fetch failed: HTTP ${res.status}`);
   const body = await res.json();
   return Array.isArray(body?.summaries) ? body.summaries : [];
+}
+
+export async function getWorkstreamSummaries(): Promise<WorkstreamSummary[]> {
+  const result = await withHomeUnreachableRetry(getWorkstreamSummariesUncached);
+  await writeCache("summaries", result);
+  return result;
+}
+
+/** Last successful getWorkstreamSummaries() result, if any - for a stale-data fallback display. */
+export async function getCachedWorkstreamSummaries(): Promise<{ value: WorkstreamSummary[]; at: string } | null> {
+  return readCache<WorkstreamSummary[]>("summaries");
 }
 
 export async function ask(query: string): Promise<AskResult> {

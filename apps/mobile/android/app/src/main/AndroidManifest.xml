@@ -60,6 +60,10 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Runtime-requested via BarcodeScanner.requestPermissions() in Setup's
+         "Scan to Connect" flow — declaring it here just makes it requestable. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <!-- Needed for AccessibilityScanner.listInstalledApps() (the app picker for
          screen-capture allowlisting) to see the full installed-app list on
