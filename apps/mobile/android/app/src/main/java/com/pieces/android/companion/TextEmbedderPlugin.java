@@ -70,9 +70,14 @@ public class TextEmbedderPlugin extends Plugin {
 
     @PluginMethod
     public void checkAvailability(PluginCall call) {
-        JSObject ret = new JSObject();
-        ret.put("status", (embedder != null && !initFailed) ? "available" : "unavailable");
-        call.resolve(ret);
+        // Queue behind the load() init task on the same executor so a
+        // cold-start caller sees the settled state, not a transient
+        // "unavailable" while the model is still mapping.
+        executor.execute(() -> {
+            JSObject ret = new JSObject();
+            ret.put("status", (embedder != null && !initFailed) ? "available" : "unavailable");
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
@@ -110,28 +115,24 @@ public class TextEmbedderPlugin extends Plugin {
         executor.execute(() -> {
             JSObject ret = new JSObject();
             JSONArray vectors = new JSONArray();
-            try {
-                for (int i = 0; i < textsArr.length(); i++) {
-                    try {
-                        String text = textsArr.getString(i);
-                        TextEmbedder e = embedder;
-                        if (e == null) {
-                            vectors.put(JSONObject.NULL);
-                            continue;
-                        }
-                        EmbeddingResult result = e.embed(text).embeddingResult();
-                        List<Embedding> embeddings = result.embeddings();
-                        if (embeddings.isEmpty()) {
-                            vectors.put(JSONObject.NULL);
-                        } else {
-                            vectors.put(floatArrayToJson(embeddings.get(0).floatEmbedding()));
-                        }
-                    } catch (Throwable inner) {
+            for (int i = 0; i < textsArr.length(); i++) {
+                try {
+                    String text = textsArr.getString(i);
+                    TextEmbedder e = embedder;
+                    if (e == null) {
                         vectors.put(JSONObject.NULL);
+                        continue;
                     }
+                    EmbeddingResult result = e.embed(text).embeddingResult();
+                    List<Embedding> embeddings = result.embeddings();
+                    if (embeddings.isEmpty()) {
+                        vectors.put(JSONObject.NULL);
+                    } else {
+                        vectors.put(floatArrayToJson(embeddings.get(0).floatEmbedding()));
+                    }
+                } catch (Throwable inner) {
+                    vectors.put(JSONObject.NULL);
                 }
-            } catch (Throwable t) {
-                // fall through — return whatever we accumulated
             }
             ret.put("vectors", vectors);
             call.resolve(ret);

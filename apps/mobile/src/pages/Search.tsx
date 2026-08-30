@@ -33,6 +33,7 @@ export default function Search() {
         serverSkipped: result.serverSkipped,
         fallback: result.mode === "text-fallback",
       });
+      setExpanded(null);
       recordEvent({
         type: "search",
         screen: "recent",
@@ -47,7 +48,6 @@ export default function Search() {
   }, []);
 
   useEffect(() => {
-    recordEvent({ type: "screen_view", screen: "recent", timestamp: new Date().toISOString() });
     return () => clearTimeout(timer.current);
   }, []);
 

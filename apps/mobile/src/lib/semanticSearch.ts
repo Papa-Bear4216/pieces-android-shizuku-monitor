@@ -47,8 +47,9 @@ export function __resetServerCache(): void {
 }
 
 function dot(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0;
   let sum = 0;
-  const n = Math.min(a.length, b.length);
+  const n = a.length;
   for (let i = 0; i < n; i++) sum += a[i] * b[i];
   return sum;
 }
