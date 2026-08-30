@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi, afterEach } from "vitest";
 
 vi.mock("./textEmbedder", () => ({
   embed: vi.fn(),
@@ -20,6 +20,7 @@ import { semanticSearch, EmbedderUnavailableError, MIN_SCORE } from "./semanticS
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.resetModules();
   vi.mocked(embedderAvailable).mockResolvedValue(true);
   vi.mocked(getWorkstreamSummaries).mockResolvedValue([]);
   vi.mocked(embedBatch).mockResolvedValue([]);
@@ -74,6 +75,13 @@ describe("semanticSearch", () => {
     const res = await semanticSearch("q");
     expect(res.hits).toHaveLength(1);
     expect(res.hits[0]).toMatchObject({ text: "wrote the report", source: "server" });
+    // Verify embedBatch was called with the exact name+text format
+    expect(vi.mocked(embedBatch)).toHaveBeenCalledWith(["Report\nwrote the report"]);
+    // Second call should hit the cache and not call embedBatch again
+    vi.mocked(embedBatch).mockClear();
+    const res2 = await semanticSearch("q");
+    expect(res2.hits).toHaveLength(1);
+    expect(vi.mocked(embedBatch)).not.toHaveBeenCalled();
   });
 
   test("honors opts.limit", async () => {
@@ -89,6 +97,25 @@ describe("semanticSearch", () => {
     );
     const res = await semanticSearch("q", { limit: 5 });
     expect(res.hits).toHaveLength(5);
+  });
+
+  test("empty and whitespace queries return empty results without calling embed", async () => {
+    const emptyRes = await semanticSearch("");
+    expect(emptyRes).toEqual({ hits: [], serverSkipped: false, mode: "relevant" });
+    expect(vi.mocked(embed)).not.toHaveBeenCalled();
+
+    vi.mocked(embed).mockClear();
+    const whitespaceRes = await semanticSearch("   ");
+    expect(whitespaceRes).toEqual({ hits: [], serverSkipped: false, mode: "relevant" });
+    expect(vi.mocked(embed)).not.toHaveBeenCalled();
+  });
+
+  test("non-Home/Proxy server error is rethrown, not swallowed", async () => {
+    vi.mocked(embed).mockResolvedValue({ ok: true, vector: [1, 0] });
+    vi.mocked(readIndex).mockResolvedValue([]);
+    const serverError = new Error("boom");
+    vi.mocked(getWorkstreamSummaries).mockRejectedValue(serverError);
+    await expect(semanticSearch("q")).rejects.toThrow(serverError);
   });
 
   test("text-fallback path when embedder unavailable: substring match, mode text-fallback", async () => {
