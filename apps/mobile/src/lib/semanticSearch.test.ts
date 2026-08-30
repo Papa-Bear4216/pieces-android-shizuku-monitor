@@ -15,7 +15,7 @@ vi.mock("./api", async (importOriginal) => {
 
 import { embed, embedBatch, embedderAvailable } from "./textEmbedder";
 import { readIndex } from "./captureIndex";
-import { getWorkstreamSummaries, HomeNodeUnreachableError } from "./api";
+import { getWorkstreamSummaries, HomeNodeUnreachableError, ProxyNotConfiguredError } from "./api";
 import { semanticSearch, EmbedderUnavailableError, MIN_SCORE, __resetServerCache } from "./semanticSearch";
 
 beforeEach(() => {
@@ -82,6 +82,42 @@ describe("semanticSearch", () => {
     const res2 = await semanticSearch("q");
     expect(res2.hits).toHaveLength(1);
     expect(vi.mocked(embedBatch)).not.toHaveBeenCalled();
+  });
+
+  test("index entry with a mismatched vector length scores 0 and is dropped", async () => {
+    vi.mocked(embed).mockResolvedValue({ ok: true, vector: [1, 0] });
+    vi.mocked(readIndex).mockResolvedValue([
+      { id: "local:stale", text: "stale model entry", vector: [1, 0, 0, 0], timestamp: "t1", source: "local" },
+      { id: "local:good", text: "current entry", vector: [1, 0], timestamp: "t2", source: "local" },
+    ]);
+    const res = await semanticSearch("q");
+    expect(res.hits.map((h) => h.text)).toEqual(["current entry"]);
+  });
+
+  test("ProxyNotConfiguredError → serverSkipped true, local hits still returned, no throw", async () => {
+    vi.mocked(embed).mockResolvedValue({ ok: true, vector: [1, 0] });
+    vi.mocked(readIndex).mockResolvedValue([
+      { id: "local:a", text: "local hit", vector: [1, 0], timestamp: "t", source: "local" },
+    ]);
+    vi.mocked(getWorkstreamSummaries).mockRejectedValue(new ProxyNotConfiguredError());
+    const res = await semanticSearch("q");
+    expect(res.serverSkipped).toBe(true);
+    expect(res.hits.map((h) => h.text)).toEqual(["local hit"]);
+  });
+
+  test("text-fallback SERVER branch: substring-matched summary appears as a server hit, sorted by timestamp desc", async () => {
+    vi.mocked(embedderAvailable).mockResolvedValue(false);
+    vi.mocked(readIndex).mockResolvedValue([
+      { id: "local:a", text: "local lamp note", vector: [], timestamp: "2026-01-01T00:00:00Z", source: "local" },
+    ]);
+    vi.mocked(getWorkstreamSummaries).mockResolvedValue([
+      { id: "s1", name: "Lamp shopping", created: "2026-03-01T00:00:00Z", text: "compared lamp prices" },
+    ]);
+    const res = await semanticSearch("lamp");
+    expect(res.mode).toBe("text-fallback");
+    expect(res.hits.map((h) => h.source)).toEqual(["server", "local"]);
+    expect(res.hits[0]).toMatchObject({ source: "server", text: "compared lamp prices" });
+    expect(embed).not.toHaveBeenCalled();
   });
 
   test("honors opts.limit", async () => {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { fireEvent } from "@testing-library/dom";
 
 vi.mock("react-router", () => ({ useNavigate: () => vi.fn() }));
@@ -34,8 +34,9 @@ describe("Search page", () => {
     render(<Search />);
     await type("stuff");
     await waitFor(() => expect(screen.getByText("bought a lamp")).toBeTruthy());
-    expect(screen.getByText(/on this device/i)).toBeTruthy();
-    expect(screen.getByText(/from home pc/i)).toBeTruthy();
+    const cards = screen.getAllByRole("listitem");
+    expect(within(cards[0]).getByText("On this device")).toBeTruthy();
+    expect(within(cards[1]).getByText("From home PC")).toBeTruthy();
     expect(recordEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: "search", screen: "recent", query: "stuff", resultCount: 2, mode: "relevant" }),
     );
