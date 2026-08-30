@@ -24,6 +24,13 @@ android {
         // stored uncompressed in the APK.
         noCompress 'tflite'
     }
+    packaging {
+        jniLibs {
+            // Package native .so files uncompressed and page-aligned so the
+            // APK passes Android 15's 16 KB ELF alignment check.
+            useLegacyPackaging = false
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
@@ -57,7 +64,7 @@ dependencies {
     // MediaPipe Text Embedder for local semantic search — bundled tflite,
     // L2-normalized 100-dim embeddings, fully offline. Not GenAI, so not
     // subject to AICore's foreground-app inference restriction.
-    implementation 'com.google.mediapipe:tasks-text:0.10.14'
+    implementation 'com.google.mediapipe:tasks-text:0.10.35'
 }
 
 apply from: 'capacitor.build.gradle'

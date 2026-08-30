@@ -79,8 +79,8 @@ Server summaries are embedded on demand at search time and cached only for the s
 | `embedBatch({ texts })` | `{ vectors: (number[] \| null)[] }` | One native round-trip for the server-summary set (~10–50 texts). Per-text failure → `null` at that index. |
 
 - **Options:** `TextEmbedderOptions` with `.setL2Normalize(true)` so cosine similarity reduces to a dot product in `semanticSearch.ts`.
-- **Model asset:** `universal_sentence_encoder.tflite` (~6 MB, 100-dim output) committed to `apps/mobile/android/app/src/main/assets/`. Treated as a release artifact like `apps/mobile/src/data/playCategories.json`. The `.tflite` itself adds ~6 MB, but pulling in MediaPipe `tasks-text` also bundles its native libraries (TFLite runtime + sentencepiece/regex `.so`). `ndk { abiFilters 'arm64-v8a' }` is now applied in `build.gradle`, so those `.so` libs ship for arm64 only rather than all four ABIs; the debug APK is ~29.1 MB (29,116,050 bytes), down from ~58.7 MB. `armeabi-v7a` may need adding back if 32-bit devices are in scope.
-- **Gradle:** add `implementation 'com.google.mediapipe:tasks-text:0.10.14'` to `apps/mobile/android/app/build.gradle` `dependencies` block. (Pin to the exact version verified during implementation; `0.10.14` is the target.)
+- **Model asset:** `universal_sentence_encoder.tflite` (~6 MB, 100-dim output) committed to `apps/mobile/android/app/src/main/assets/`. Treated as a release artifact like `apps/mobile/src/data/playCategories.json`. The `.tflite` itself adds ~6 MB, but pulling in MediaPipe `tasks-text` also bundles its native libraries (TFLite runtime + sentencepiece/regex `.so`). `ndk { abiFilters 'arm64-v8a' }` is now applied in `build.gradle`, so those `.so` libs ship for arm64 only rather than all four ABIs; the debug APK is ~39.7 MB (39,654,449 bytes; was ~37.0 MB on `tasks-text:0.10.14`, grew after bumping to `0.10.35` for 16 KB ELF page alignment), down from ~58.7 MB. `armeabi-v7a` may need adding back if 32-bit devices are in scope.
+- **Gradle:** add `implementation 'com.google.mediapipe:tasks-text:0.10.35'` to `apps/mobile/android/app/build.gradle` `dependencies` block. (Pin to the exact version verified during implementation. `0.10.35` — MediaPipe added 16 KB ELF page alignment around 0.10.21; `packaging { jniLibs { useLegacyPackaging = false } }` is also set so AGP packages the `.so` files uncompressed and page-aligned.)
 - **Registration:** `registerPlugin(TextEmbedderPlugin.class);` in `MainActivity.java` alongside the existing three.
 - **minSdk:** no bump needed. minSdk is currently 26 (bumped for ML Kit GenAI during triage work); MediaPipe Tasks Text requires 24.
 
@@ -225,7 +225,7 @@ New route `/search`. Added as a 5th entry to the `tabbar` `<nav>` in all pages (
 1. Trigger a real passive capture in an allowed app. Reopen the companion app (triggers `triageQueue()`). Open `/search`, search a term related to what was on screen → a hit appears with the **"On this device"** badge.
 2. Enable airplane mode. Search again → device hits still return; a **"Home PC offline"** banner shows.
 3. With the home node reachable, search a term matching a known workstream summary → a hit appears with the **"From home PC"** badge.
-4. Confirm the debug APK is ~29.1 MB (29,116,050 bytes; the `.tflite` is ~6 MB of that; MediaPipe `tasks-text` native libs, now arm64-v8a only via `abiFilters`, account for most of the rest) and the app launches without an ANR (model loads off the main thread or lazily).
+4. Confirm the debug APK is ~39.7 MB (39,654,449 bytes; the `.tflite` is ~6 MB of that; MediaPipe `tasks-text` native libs, now arm64-v8a only via `abiFilters`, account for most of the rest) and the app launches without an ANR (model loads off the main thread or lazily).
 
 ## Out of scope (YAGNI — revisit at roadmap step 3)
 
