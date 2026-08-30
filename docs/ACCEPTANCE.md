@@ -158,7 +158,7 @@ Prerequisites: a debug build installed on a device where on-device triage alread
    - Expect: a result card with the **"From home PC"** badge.
 
 4. **APK size / launch.**
-   - Confirm the debug APK is ~6 MB larger than the previous build (the bundled `.tflite`).
+   - The debug APK is ~58.7 MB (measured: 58,716,445 bytes). The bundled `universal_sentence_encoder.tflite` accounts for ~6 MB of that; the MediaPipe `tasks-text` native libraries (TFLite runtime + sentencepiece/regex `.so`, bundled for **all** ABIs) account for most of the rest. Adding `ndk { abiFilters 'arm64-v8a' }` to `app/build.gradle` would cut most of the non-model bulk — tracked as a follow-up, not done here.
    - Confirm the app launches without an ANR (model loads off the main thread in `TextEmbedderPlugin.load()` — inference is on a single-thread executor).
 
 5. **Model-unavailable fallback (optional, emulator without the model).**
