@@ -13,7 +13,22 @@ export type UsageEvent =
   | { type: "search"; screen: "recent"; query: string; resultCount: number; mode: "relevant" | "text" | "text-fallback"; timestamp: string }
   | { type: "screen_view"; screen: "setup" | "status" | "recent" | "ask"; timestamp: string }
   | { type: "setup_saved"; screen: "setup"; mode: "lan" | "remote"; timestamp: string }
-  | { type: "system_telemetry"; screen: "background"; telemetry: string; package?: string; app_label?: string; timestamp: string };
+  | {
+      type: "system_telemetry";
+      screen: "background";
+      telemetry: string;
+      package?: string;
+      app_label?: string;
+      timestamp: string;
+      // Set once triageQueue() has attempted this entry — true if it holds
+      // an on-device summary, false if triage ran but fell back to raw
+      // text. Undefined means "not yet triaged" (the state every passive
+      // capture starts in — see passiveCapture.ts, which deliberately does
+      // NOT call tryOnDeviceTriage inline anymore since AICore only permits
+      // inference while this app is foreground, never true during a real
+      // background capture). triageQueue() is the only writer of this field.
+      triaged?: boolean;
+    };
 
 async function readQueue(): Promise<UsageEvent[]> {
   const { value } = await Preferences.get({ key: QUEUE_KEY });
@@ -38,6 +53,14 @@ export async function recordEvent(event: UsageEvent): Promise<void> {
 
 export async function peekQueue(): Promise<UsageEvent[]> {
   return readQueue();
+}
+
+// Overwrites the whole queue in place — for triageQueue() rewriting
+// individual system_telemetry entries with on-device summaries without
+// changing queue order or length (clearSentEvents' front-slice assumption
+// depends on order staying stable between peek and clear).
+export async function replaceQueue(events: UsageEvent[]): Promise<void> {
+  await writeQueue(events);
 }
 
 /** Removes exactly the given events from the front of the queue — only call after a confirmed 2xx report. */

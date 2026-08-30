@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(ShizukuMonitorPlugin.class);
         registerPlugin(AccessibilityPlugin.class);
+        registerPlugin(OnDeviceTriagePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

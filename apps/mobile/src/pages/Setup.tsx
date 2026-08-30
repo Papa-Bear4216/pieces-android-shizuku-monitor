@@ -213,7 +213,7 @@ export default function Setup() {
       <button onClick={handleScanToConnect} disabled={checking}>
         Scan to Connect
       </button>
-      <p className="hint" style={{ marginTop: 4 }}>
+      <p className="hint setup-note">
         Fastest option: scan a connection code shown by the server (e.g. a companion
         setup script running on your PC). Fills in both fields below and saves
         automatically — no typing or copy-paste needed.
@@ -243,7 +243,7 @@ export default function Setup() {
         if (!info?.expiresAt) return null;
         const expired = info.expiresAt.getTime() < Date.now();
         return (
-          <p className={expired ? "status-error" : "hint"} style={{ marginTop: -8, marginBottom: 12 }}>
+          <p className={`setup-note ${expired ? "status-error" : "hint"}`}>
             Remote token {formatExpiry(info.expiresAt)}
             {expired && " — scan a fresh connection code, or re-enroll this device."}
           </p>
@@ -267,8 +267,8 @@ export default function Setup() {
       )}
       {result === "unreachable" && <p className="status-error">Could not reach proxy at that address.</p>}
 
-      <div style={{ marginTop: 24, padding: 12, border: "1px solid #444", borderRadius: 8 }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+      <div className="panel">
+        <label className="toggle-row">
           <input
             type="checkbox"
             checked={screenContext}
@@ -276,14 +276,14 @@ export default function Setup() {
           />
           <strong>Enable screen context</strong>
         </label>
-        <p className="hint" style={{ marginTop: 8 }}>
+        <p className="hint" style={{ margin: 0 }}>
           Off by default. Turning this on lets you pick specific apps (in the Status tab's
           app picker) whose on-screen text gets captured and sent to PiecesOS as context.
           No Shizuku required — just Android's standard Accessibility permission, same
           mechanism screen readers use. You'll need to grant it once in system Settings.
         </p>
         {screenContext && (
-          <div style={{ marginTop: 8 }}>
+          <div>
             {accessibilityGranted ? (
               <p className="status-ok" style={{ margin: 0 }}>Accessibility permission granted.</p>
             ) : (
@@ -300,8 +300,8 @@ export default function Setup() {
         )}
       </div>
 
-      <div style={{ marginTop: 16, padding: 12, border: "1px solid #444", borderRadius: 8 }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+      <div className="panel">
+        <label className="toggle-row">
           <input
             type="checkbox"
             checked={shizukuToolkit}
@@ -309,7 +309,7 @@ export default function Setup() {
           />
           <strong>Enable Shizuku toolkit (advanced)</strong>
         </label>
-        <p className="hint" style={{ marginTop: 8 }}>
+        <p className="hint" style={{ margin: 0 }}>
           Off by default. Turning this on lets the app run privileged diagnostic commands
           via Shizuku, and auto-re-enable screen context's Accessibility permission if it
           gets dropped (e.g. after a reboot) instead of you having to re-grant it manually.

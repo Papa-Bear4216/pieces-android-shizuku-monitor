@@ -5,6 +5,7 @@ import { recordEvent } from "../lib/usage";
 import { flushUsageEvents } from "../lib/flush";
 import { isShizukuToolkitEnabled, isScreenContextEnabled } from "../lib/config";
 import { onPassiveCapture, getLastPassiveCapture, startPassiveCaptureListener } from "../lib/passiveCapture";
+import { withPlayCategoryFallback } from "../lib/playCategories";
 import { registerPlugin } from "@capacitor/core";
 
 const ShizukuMonitor = registerPlugin<any>('ShizukuMonitor');
@@ -24,7 +25,7 @@ type State =
   | { kind: "home-offline"; message: string; stale?: { health: string; version: string; at: string } }
   | { kind: "error"; message: string };
 
-type AppEntry = { packageName: string; label: string; isSystemApp: boolean; category: string };
+type AppEntry = { packageName: string; label: string; isSystemApp: boolean; hasLauncherIcon: boolean; category: string };
 
 const PASSIVE_MODE_CONFIRM_PHRASE = "I understand";
 
@@ -39,7 +40,26 @@ export default function Status() {
   const [recentPackages, setRecentPackages] = useState<Set<string>>(new Set());
   const [usageAccessGranted, setUsageAccessGranted] = useState(false);
   const [showSystemApps, setShowSystemApps] = useState(false);
+  // Hidden by default: an app with no launcher icon (getLaunchIntentForPackage
+  // returns null natively) can never be brought to the foreground, so it can
+  // never have on-screen text worth capturing - filtering it out of the
+  // picker's main list reduces noise for the common case. Not a hard
+  // exclusion like EXCLUDED_PREFIXES/EXCLUDED_NOISE_PREFIXES (Java-side,
+  // enforced even against a manually-edited allowlist) - this is just a
+  // default view filter the user can lift with the toggle below, since a
+  // background-only package is unusual but not impossible to want.
+  const [showBackgroundApps, setShowBackgroundApps] = useState(false);
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  // Total foreground ms per package over the same window as recentPackages
+  // (see getRecentlyUsedPackages) — only populated when Usage Access is
+  // granted, same gate as recentPackages itself. Empty otherwise, which the
+  // "Active time" sort mode below falls back gracefully from (0 for every
+  // app just means that sort ties everything and falls through to name).
+  const [usageMs, setUsageMs] = useState<Record<string, number>>({});
+  const [pickerSearch, setPickerSearch] = useState("");
+  const [pickerCategoryFilter, setPickerCategoryFilter] = useState<string>("all");
+  type SortMode = "name" | "recent" | "active-time" | "category";
+  const [sortMode, setSortMode] = useState<SortMode>("category");
   const [passiveMode, setPassiveMode] = useState(false);
   const [passiveConfirmText, setPassiveConfirmText] = useState("");
   const [showPassiveConfirm, setShowPassiveConfirm] = useState(false);
@@ -115,7 +135,10 @@ export default function Status() {
         AccessibilityScanner.getAllowlist(),
         AccessibilityScanner.isUsageAccessGranted(),
       ]);
-      setApps(apps);
+      // Fills in a real category (from the offline Play Store scrape seed)
+      // only where the OS-reported category is "Uncategorized" — never
+      // overrides a category Android itself declared.
+      setApps(apps.map(withPlayCategoryFallback));
       setUsageAccessGranted(granted);
 
       // Suggestion, not an override — recent packages are pre-checked only if
@@ -123,8 +146,9 @@ export default function Status() {
       // allowlist reflects a deliberate prior choice and is never silently
       // expanded by this.
       if (granted) {
-        const { packages: recent } = await AccessibilityScanner.getRecentlyUsedPackages({ days: 7 });
+        const { packages: recent, usageMs: usage } = await AccessibilityScanner.getRecentlyUsedPackages({ days: 7 });
         setRecentPackages(new Set(recent));
+        setUsageMs(usage ?? {});
         if (packages.length === 0 && recent.length > 0) {
           const installedNames = new Set(apps.map((a: AppEntry) => a.packageName));
           const suggested = recent.filter((p: string) => installedNames.has(p));
@@ -157,6 +181,20 @@ export default function Status() {
     await applyAllowlist(next);
   }
 
+  // A real toggle, not just "add all" - if every app in the group is
+  // already selected, this deselects the whole group instead of being a
+  // no-op, so the header checkbox's own checked state stays meaningful
+  // (checked = "all of these are in the allowlist").
+  async function toggleGroup(groupApps: AppEntry[]) {
+    const next = new Set(allowlist);
+    const allSelected = groupApps.every(a => next.has(a.packageName));
+    for (const a of groupApps) {
+      if (allSelected) next.delete(a.packageName);
+      else next.add(a.packageName);
+    }
+    await applyAllowlist(next);
+  }
+
   async function applyAllowlist(next: Set<string>) {
     setAllowlistState(next);
     await AccessibilityScanner.setAllowlist({ packages: Array.from(next) });
@@ -169,8 +207,17 @@ export default function Status() {
 
   async function selectAllApps() {
     // apps is already pre-filtered by the Java side (banking/password-manager
-    // packages excluded from the list entirely), so "all" here still respects
-    // that boundary — it's a bulk-edit convenience, not a wider grant.
+    // packages excluded from the list entirely, both by package prefix AND by
+    // app-label keyword as of 2026-08-30 — see AccessibilityPlugin.isExcluded),
+    // so "all" here still respects that boundary — it's a bulk-edit convenience,
+    // not a wider grant. setAllowlist also re-checks label-based exclusion
+    // server-side as defense in depth, so this stays safe even if this list
+    // were ever stale.
+    // Deliberately NOT scoped to the "hide background-only apps" view filter
+    // below (showBackgroundApps) — that filter only controls what's shown,
+    // Select All still means every capturable app, matching its existing
+    // pre-filter behavior rather than silently changing meaning based on a
+    // view toggle's current state.
     await applyAllowlist(new Set(apps.map(a => a.packageName)));
   }
 
@@ -235,7 +282,7 @@ export default function Status() {
           <button onClick={load}>Retry</button>
 
           {state.stale && (
-            <p className="hint" style={{ marginTop: 12 }}>
+            <p className="hint setup-note">
               Last known: PiecesOS {state.stale.version}, as of {new Date(state.stale.at).toLocaleString()}.
             </p>
           )}
@@ -261,21 +308,17 @@ export default function Status() {
           <button onClick={load}>Refresh</button>
 
           {!toolkitEnabled && !contextEnabled && (
-            <p className="hint" style={{ marginTop: 20 }}>
+            <p className="hint setup-note" style={{ marginTop: 20 }}>
               Screen context and the Shizuku toolkit are both off. Enable either in Setup.
             </p>
           )}
 
           {toolkitEnabled && (
-            <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 8, background: 'rgba(0,0,0,0.8)', padding: 16, borderRadius: 8 }}>
-              <h4 style={{margin: 0, color: 'white', fontSize: 14}}>Shizuku Diagnostics</h4>
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            <div className="panel" style={{ marginTop: 20 }}>
+              <p className="panel-title">Shizuku Diagnostics</p>
+              <div className="chip-row">
                 {PRESET_COMMANDS.map(c => (
-                  <button
-                    key={c}
-                    onClick={() => runPreset(c)}
-                    style={{ fontSize: 11, padding: '4px 8px', cursor: 'pointer', borderRadius: 4, border: 'none', background: '#444', color: 'white' }}
-                  >
+                  <button key={c} className="chip" onClick={() => runPreset(c)}>
                     {c}
                   </button>
                 ))}
@@ -284,147 +327,241 @@ export default function Status() {
           )}
 
           {contextEnabled && (
-            <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 8, background: 'rgba(0,0,0,0.8)', padding: 16, borderRadius: 8 }}>
-              <h4 style={{margin: 0, color: 'white', fontSize: 14}}>Screen Context</h4>
-              <p style={{ color: '#ccc', fontSize: 12, margin: 0 }}>
+            <div className="panel" style={{ marginTop: 20 }}>
+              <p className="panel-title">Screen Context</p>
+              <p className="hint" style={{ margin: 0 }}>
                 Screen-text capture only reads from apps you've explicitly allowed below.
               </p>
-              <button
-                onClick={openPicker}
-                style={{ padding: '8px 16px', background: '#555', color: 'white', borderRadius: 8, border: 'none', cursor: 'pointer' }}
-              >
+              <button className="secondary" onClick={openPicker}>
                 Choose allowed apps ({allowlist.size} selected)
               </button>
-              <button
-                onClick={scanScreenText}
-                disabled={allowlist.size === 0}
-                style={{ padding: '8px 16px', background: allowlist.size === 0 ? '#666' : '#9c27b0', color: 'white', borderRadius: 8, border: 'none', cursor: allowlist.size === 0 ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
-              >
+              <button onClick={scanScreenText} disabled={allowlist.size === 0}>
                 Scan Screen Text
               </button>
 
               {showPicker && (() => {
-                const userApps = apps.filter(a => !a.isSystemApp);
-                const systemApps = apps.filter(a => a.isSystemApp);
+                // A currently-allowlisted app is never hidden by this filter,
+                // even if it has no launcher icon - toggling the filter off
+                // must not make an existing selection disappear from view.
+                const backgroundFiltered = apps.filter(
+                  a => showBackgroundApps || a.hasLauncherIcon || allowlist.has(a.packageName)
+                );
+                const hiddenBackgroundCount = apps.length - backgroundFiltered.length;
+
+                // Search matches label or package name, case-insensitive.
+                // Category filter and search compose - both narrow the same
+                // list, neither resets the other.
+                const query = pickerSearch.trim().toLowerCase();
+                const searched = query
+                  ? backgroundFiltered.filter(a =>
+                      a.label.toLowerCase().includes(query) || a.packageName.toLowerCase().includes(query))
+                  : backgroundFiltered;
+                const categoryFiltered = pickerCategoryFilter === "all"
+                  ? searched
+                  : searched.filter(a => a.category === pickerCategoryFilter);
+
+                const allCategoryNames = Array.from(new Set(apps.map(a => a.category))).sort();
+
+                const userApps = categoryFiltered.filter(a => !a.isSystemApp);
+                const systemApps = categoryFiltered.filter(a => a.isSystemApp);
                 const recentApps = userApps.filter(a => recentPackages.has(a.packageName));
                 const recentNames = new Set(recentApps.map(a => a.packageName));
+
+                const renderAppRow = (app: AppEntry) => (
+                  <label key={app.packageName} className="app-row">
+                    <input
+                      type="checkbox"
+                      checked={allowlist.has(app.packageName)}
+                      onChange={() => toggleApp(app.packageName)}
+                    />
+                    {app.label} <span className="app-row-pkg">({app.packageName})</span>
+                    {sortMode === "active-time" && usageMs[app.packageName] > 0 && (
+                      <span className="app-row-pkg" style={{ marginLeft: "auto" }}>
+                        {/* MIN_FOREGROUND_MS_FOR_RECENT (native) is 60s, so this is never 0m for
+                            anything that actually appears in usageMs - but Math.max guards it
+                            anyway in case that threshold ever changes without this comment
+                            being noticed. */}
+                        {Math.max(1, Math.round(usageMs[app.packageName] / 60000))}m
+                      </span>
+                    )}
+                  </label>
+                );
+
+                // "category" reuses the existing grouped-by-category layout
+                // (with its own Recently Used carve-out and collapsible
+                // sections) - the other three modes are a single flat list,
+                // since flattening AND grouping-by-category at the same time
+                // doesn't make sense as one ordering.
                 const byCategory = new Map<string, AppEntry[]>();
-                for (const app of userApps) {
-                  if (recentNames.has(app.packageName)) continue;
-                  const list = byCategory.get(app.category) ?? [];
-                  list.push(app);
-                  byCategory.set(app.category, list);
+                if (sortMode === "category") {
+                  for (const app of userApps) {
+                    if (recentNames.has(app.packageName)) continue;
+                    const list = byCategory.get(app.category) ?? [];
+                    list.push(app);
+                    byCategory.set(app.category, list);
+                  }
                 }
                 const categoryNames = Array.from(byCategory.keys())
                   .filter(c => c !== "Uncategorized")
                   .sort();
                 if (byCategory.has("Uncategorized")) categoryNames.push("Uncategorized");
 
-                const renderAppRow = (app: AppEntry) => (
-                  <label key={app.packageName} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13, color: 'white' }}>
-                    <input
-                      type="checkbox"
-                      checked={allowlist.has(app.packageName)}
-                      onChange={() => toggleApp(app.packageName)}
-                    />
-                    {app.label} <span style={{ color: '#888', fontSize: 11 }}>({app.packageName})</span>
-                  </label>
-                );
+                const flatSortComparators: Record<Exclude<SortMode, "category">, (a: AppEntry, b: AppEntry) => number> = {
+                  name: (a, b) => a.label.localeCompare(b.label),
+                  recent: (a, b) => {
+                    const aRecent = recentNames.has(a.packageName) ? 1 : 0;
+                    const bRecent = recentNames.has(b.packageName) ? 1 : 0;
+                    return bRecent - aRecent || a.label.localeCompare(b.label);
+                  },
+                  "active-time": (a, b) => {
+                    const diff = (usageMs[b.packageName] ?? 0) - (usageMs[a.packageName] ?? 0);
+                    return diff !== 0 ? diff : a.label.localeCompare(b.label);
+                  },
+                };
+                const flatSortedUserApps = sortMode === "category"
+                  ? []
+                  : [...userApps].sort(flatSortComparators[sortMode]);
 
                 return (
-                  <div style={{ marginTop: 8, maxHeight: 400, overflowY: 'auto', background: '#111', borderRadius: 8, padding: 8 }}>
-                    <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                      <button
-                        onClick={selectAllApps}
-                        style={{ padding: '4px 10px', fontSize: 12, background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                  <div className="picker">
+                    <input
+                      type="search"
+                      placeholder="Search apps…"
+                      value={pickerSearch}
+                      onChange={(e) => setPickerSearch(e.target.value)}
+                      style={{ marginBottom: 8 }}
+                    />
+
+                    <div className="picker-actions" style={{ flexWrap: "wrap" }}>
+                      <select
+                        value={pickerCategoryFilter}
+                        onChange={(e) => setPickerCategoryFilter(e.target.value)}
+                        style={{ padding: "6px 10px", fontSize: 12.5, borderRadius: 8, border: "1.5px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
                       >
-                        Select all
-                      </button>
-                      <button
-                        onClick={deselectAllApps}
-                        style={{ padding: '4px 10px', fontSize: 12, background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                        <option value="all">All categories</option>
+                        {allCategoryNames.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <select
+                        value={sortMode}
+                        onChange={(e) => setSortMode(e.target.value as SortMode)}
+                        style={{ padding: "6px 10px", fontSize: 12.5, borderRadius: 8, border: "1.5px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
                       >
-                        Deselect all
-                      </button>
+                        <option value="category">Sort: Category</option>
+                        <option value="name">Sort: Name</option>
+                        <option value="recent">Sort: Recently used</option>
+                        <option value="active-time">Sort: Active time</option>
+                      </select>
                     </div>
 
+                    <div className="picker-actions">
+                      <button className="secondary" onClick={selectAllApps}>Select all</button>
+                      <button className="secondary" onClick={deselectAllApps}>Deselect all</button>
+                    </div>
+
+                    {hiddenBackgroundCount > 0 && (
+                      <label className="app-row" style={{ marginBottom: 6 }}>
+                        <input
+                          type="checkbox"
+                          checked={showBackgroundApps}
+                          onChange={(e) => setShowBackgroundApps(e.target.checked)}
+                        />
+                        Show background-only apps ({hiddenBackgroundCount} hidden — no launcher icon, can't ever be brought on-screen)
+                      </label>
+                    )}
+
                     {!usageAccessGranted && (
-                      <div style={{ marginBottom: 8, padding: 8, background: '#222', borderRadius: 6 }}>
-                        <p style={{ color: '#ccc', fontSize: 11, margin: '0 0 6px 0' }}>
-                          Grant Usage Access to auto-suggest apps you've used this week.
-                        </p>
-                        <button
-                          onClick={() => AccessibilityScanner.openUsageAccessSettings()}
-                          style={{ padding: '4px 10px', fontSize: 12, background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
-                        >
+                      <div className="picker-notice">
+                        <p>Grant Usage Access to auto-suggest apps you've used this week.</p>
+                        <button className="secondary" onClick={() => AccessibilityScanner.openUsageAccessSettings()}>
                           Grant Usage Access
                         </button>
                       </div>
                     )}
 
-                    {recentApps.length > 0 && (
+                    {sortMode !== "category" && (
+                      userApps.length === 0
+                        ? <p className="hint">No apps match.</p>
+                        : flatSortedUserApps.map(renderAppRow)
+                    )}
+
+                    {sortMode === "category" && recentApps.length > 0 && (
                       <div style={{ marginBottom: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 'bold', color: '#9c9', margin: '4px 0' }}>
-                          Recently used (last 7 days)
+                        <div className="picker-group-header">
+                          <input
+                            type="checkbox"
+                            title="Select all in this group"
+                            checked={recentApps.every(a => allowlist.has(a.packageName))}
+                            onChange={() => toggleGroup(recentApps)}
+                          />
+                          <span className="picker-group-label recent" style={{ cursor: "default" }}>
+                            Recently used (last 7 days)
+                          </span>
                         </div>
                         {recentApps.map(renderAppRow)}
                       </div>
                     )}
 
-                    {categoryNames.map(category => {
+                    {sortMode === "category" && categoryNames.map(category => {
                       const collapsed = collapsedCategories.has(category);
                       const categoryApps = (byCategory.get(category) ?? []).sort((a, b) => a.label.localeCompare(b.label));
                       return (
                         <div key={category} style={{ marginBottom: 4 }}>
-                          <div
-                            onClick={() => toggleCategoryCollapsed(category)}
-                            style={{ fontSize: 12, fontWeight: 'bold', color: '#ccc', margin: '4px 0', cursor: 'pointer' }}
-                          >
-                            {collapsed ? '▸' : '▾'} {category} ({categoryApps.length})
+                          <div className="picker-group-header">
+                            <input
+                              type="checkbox"
+                              title="Select all in this category"
+                              checked={categoryApps.every(a => allowlist.has(a.packageName))}
+                              onChange={() => toggleGroup(categoryApps)}
+                            />
+                            <span className="picker-group-label" onClick={() => toggleCategoryCollapsed(category)}>
+                              {collapsed ? '▸' : '▾'} {category} ({categoryApps.length})
+                            </span>
                           </div>
                           {!collapsed && categoryApps.map(renderAppRow)}
                         </div>
                       );
                     })}
 
-                    {systemApps.length > 0 && (
-                      <div style={{ marginTop: 8, borderTop: '1px solid #333', paddingTop: 4 }}>
-                        <div
-                          onClick={() => setShowSystemApps(!showSystemApps)}
-                          style={{ fontSize: 12, fontWeight: 'bold', color: '#888', margin: '4px 0', cursor: 'pointer' }}
-                        >
-                          {showSystemApps ? '▾' : '▸'} System apps ({systemApps.length})
+                    {systemApps.length > 0 && (() => {
+                      const sortedSystemApps = systemApps
+                        .slice()
+                        .sort(sortMode === "category" ? flatSortComparators.name : flatSortComparators[sortMode]);
+                      return (
+                        <div style={{ marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 4 }}>
+                          <div className="picker-group-header">
+                            <input
+                              type="checkbox"
+                              title="Select all system apps"
+                              checked={sortedSystemApps.every(a => allowlist.has(a.packageName))}
+                              onChange={() => toggleGroup(sortedSystemApps)}
+                            />
+                            <span className="picker-group-label" onClick={() => setShowSystemApps(!showSystemApps)}>
+                              {showSystemApps ? '▾' : '▸'} System apps ({systemApps.length})
+                            </span>
+                          </div>
+                          {showSystemApps && sortedSystemApps.map(renderAppRow)}
                         </div>
-                        {showSystemApps && systemApps
-                          .slice()
-                          .sort((a, b) => a.label.localeCompare(b.label))
-                          .map(renderAppRow)}
-                      </div>
-                    )}
+                      );
+                    })()}
 
-                    <button
-                      onClick={() => setShowPicker(false)}
-                      style={{ marginTop: 8, padding: '4px 12px', background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
-                    >
+                    <button className="secondary" style={{ marginTop: 8 }} onClick={() => setShowPicker(false)}>
                       Done
                     </button>
                   </div>
                 );
               })()}
 
-              <hr style={{ border: 0, borderTop: '1px solid #555', margin: '8px 0' }} />
-
-              <div style={{ border: '1px solid #a33', borderRadius: 6, padding: 10 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: allowlist.size === 0 ? 'not-allowed' : 'pointer', opacity: allowlist.size === 0 ? 0.5 : 1 }}>
+              <div className="panel panel-danger" style={{ marginTop: 12 }}>
+                <label className={`toggle-row ${allowlist.size === 0 ? "disabled" : ""}`}>
                   <input
                     type="checkbox"
                     checked={passiveMode}
                     disabled={allowlist.size === 0}
                     onChange={(e) => handleTogglePassiveMode(e.target.checked)}
                   />
-                  <strong style={{ color: '#f88' }}>Passive mode (advanced)</strong>
+                  <strong style={{ color: 'var(--error)' }}>Passive mode (advanced)</strong>
                 </label>
-                <p style={{ color: '#ccc', fontSize: 12, marginTop: 6 }}>
+                <p className="hint" style={{ margin: "6px 0 0" }}>
                   Instead of only capturing when you tap "Scan Screen Text," automatically
                   push screen text from allowed apps to PiecesOS whenever it changes and
                   settles for ~2 seconds. This runs continuously in the background while an
@@ -433,8 +570,8 @@ export default function Status() {
                 </p>
 
                 {showPassiveConfirm && (
-                  <div style={{ marginTop: 8, padding: 8, background: '#1a0000', borderRadius: 4 }}>
-                    <p style={{ color: '#faa', fontSize: 12 }}>
+                  <div className="confirm-box">
+                    <p>
                       This will continuously send text from {allowlist.size} allowed app{allowlist.size === 1 ? '' : 's'} to
                       PiecesOS in the background, without asking each time. Type "{PASSIVE_MODE_CONFIRM_PHRASE}" to confirm.
                     </p>
@@ -442,19 +579,18 @@ export default function Status() {
                       value={passiveConfirmText}
                       onChange={(e) => setPassiveConfirmText(e.target.value)}
                       placeholder={PASSIVE_MODE_CONFIRM_PHRASE}
-                      style={{ padding: 6, borderRadius: 4, border: 'none', width: '100%', boxSizing: 'border-box' }}
                     />
-                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <div className="confirm-actions">
                       <button
+                        className="danger"
                         onClick={confirmPassiveMode}
                         disabled={passiveConfirmText.trim() !== PASSIVE_MODE_CONFIRM_PHRASE}
-                        style={{ padding: '6px 12px', background: passiveConfirmText.trim() === PASSIVE_MODE_CONFIRM_PHRASE ? '#a33' : '#666', color: 'white', border: 'none', borderRadius: 4, cursor: passiveConfirmText.trim() === PASSIVE_MODE_CONFIRM_PHRASE ? 'pointer' : 'not-allowed' }}
                       >
                         Confirm
                       </button>
                       <button
+                        className="secondary"
                         onClick={() => { setShowPassiveConfirm(false); setPassiveConfirmText(""); }}
-                        style={{ padding: '6px 12px', background: '#444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
                       >
                         Cancel
                       </button>
@@ -463,7 +599,7 @@ export default function Status() {
                 )}
 
                 {passiveMode && lastPassiveCapture && (
-                  <p style={{ color: '#8f8', fontSize: 11, marginTop: 6 }}>
+                  <p className="status-ok" style={{ fontSize: 11, marginTop: 6, fontWeight: 400 }}>
                     Last passive capture: {lastPassiveCapture.pkg} at {new Date(lastPassiveCapture.at).toLocaleTimeString()}
                   </p>
                 )}

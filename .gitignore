@@ -19,3 +19,12 @@ apps/mobile/android/local.properties
 
 # per-machine settings (real hostnames, etc.) - see local-config.ps1.example
 apps/proxy/scripts/local-config.ps1
+
+# Play Store category scrape: personal device data (installed app inventory,
+# queue/checkpoint state), not the script itself. The useful output
+# (apps/mobile/src/data/playCategories.json) IS committed - just not the
+# per-device inputs/scratch state that produced it.
+scripts/play-category-scrape/*.txt
+scripts/play-category-scrape/queue.json
+scripts/play-category-scrape/done.json
+scripts/play-category-scrape/scrape.log

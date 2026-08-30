@@ -72,12 +72,42 @@ public class AccessibilityPlugin extends Plugin {
         "com.dashlane",
         "com.keepersecurity",
         "com.nordpass",
+        // Verified against a real device's installed package list on 2026-08-30
+        // (adb shell pm list packages) after "com.wellsfargo" was found to be a
+        // guessed prefix that didn't match the real installed package
+        // (com.wf.wellsfargomobile) and silently let Wells Fargo through. Every
+        // prefix below is a real, currently-observed package id, not a guess —
+        // but a hand-maintained list can never be complete, which is why
+        // isExcludedByLabel() below is the primary defense and this list is
+        // the fast-path/fallback, not the only layer.
         "com.chase",
         "com.bankofamerica",
-        "com.wellsfargo",
+        "com.wf.wellsfargomobile",   // Wells Fargo (was wrongly "com.wellsfargo")
         "com.citi",
-        "com.capitalone",
-        "com.usaa",
+        "com.konylabs.capitalone",   // Capital One (was wrongly "com.capitalone")
+        "com.usaa.mobile.android.usaa", // USAA (was wrongly "com.usaa")
+        "com.creditkarma.mobile",
+        "com.sofi.mobile",
+        "com.onefinance.one",        // One Finance
+        "com.uphold.wallet",
+        "piuk.blockchain.android",   // Blockchain.com wallet
+        "com.monyx.wallet",
+        "com.samsung.android.spay",  // Samsung Pay/Wallet
+        "com.samsung.android.coldwalletservice",
+        "com.samsung.android.scryptowallet",
+        "com.intuit.turbotax.mobile",
+        "com.syf",                   // Synchrony (mysynchrony, cc)
+        "com.onedebit.chime",
+        "com.equifax.myequifax",
+        "com.transunion",
+        "com.experian.android",
+        "com.acorns.early",
+        "com.affirm.central",
+        "com.monarchmoney.mobile",
+        "com.selflender.thor",
+        "com.sezzle.sezzlemobile",
+        "com.truebill",              // Rocket Money (formerly Truebill)
+        "com.paypal.android.p2pmobile", // real PayPal id; broader "com.paypal" above already covers it too
         // Messaging / SMS / calling
         "com.google.android.apps.messaging",
         "com.samsung.android.messaging",
@@ -143,6 +173,26 @@ public class AccessibilityPlugin extends Plugin {
         "com.android.packageinstaller"
     );
 
+    // Label-keyword fallback: catches finance/wallet/credit/password-manager
+    // apps whose package id isn't in EXCLUDED_PREFIXES at all — the gap that
+    // let com.wf.wellsfargomobile through (guessed as "com.wellsfargo").
+    // Matched against the app's display name (case-insensitive substring),
+    // not the package id, since the label is what the vendor actually wants
+    // the user to recognize and is far less likely to be silently renamed
+    // than an internal package id. This is deliberately broad/over-inclusive
+    // — a false-positive here just means one extra app doesn't show up in
+    // the picker, which is the safe direction for a capture exclusion list.
+    private static final List<String> EXCLUDED_LABEL_KEYWORDS = Arrays.asList(
+        "bank", "wallet", "credit", "credit score", "credit karma",
+        "paypal", "venmo", "cash app", "zelle", "capital one", "chase",
+        "wells fargo", "citibank", "usaa", "synchrony", "sofi",
+        "turbotax", "equifax", "experian", "transunion", "lastpass",
+        "bitwarden", "dashlane", "keeper", "nordpass", "1password",
+        "acorns", "affirm", "klarna", "sezzle", "chime", "monarch money",
+        "coinbase", "blockchain", "crypto", "robinhood", "uphold",
+        "rocket money", "truebill"
+    );
+
     // static + package-visible so PiecesAccessibilityService.isAllowed can
     // enforce this same denylist independently of the allowlist it reads
     // from SharedPreferences — that allowlist has no built-in cross-check
@@ -151,12 +201,29 @@ public class AccessibilityPlugin extends Plugin {
     // ends up in the saved allowlist (a picker bug, a manually-edited prefs
     // file, an app id reused by a different vendor over time) would be
     // captured with nothing to stop it.
+    //
+    // appLabel is optional (callers that only have a package name, like
+    // PiecesAccessibilityService.isAllowed on the capture-time hot path,
+    // pass null) — prefix matching alone still runs in that case. The label
+    // check only activates where a label is available (the picker, which
+    // already looks it up via PackageManager for display anyway), so it
+    // doesn't add a PackageManager lookup on the capture path.
     static boolean isExcluded(String packageName) {
+        return isExcluded(packageName, null);
+    }
+
+    static boolean isExcluded(String packageName, String appLabel) {
         for (String prefix : EXCLUDED_PREFIXES) {
             if (packageName.startsWith(prefix)) return true;
         }
         for (String prefix : EXCLUDED_NOISE_PREFIXES) {
             if (packageName.startsWith(prefix)) return true;
+        }
+        if (appLabel != null) {
+            String lower = appLabel.toLowerCase(java.util.Locale.ROOT);
+            for (String keyword : EXCLUDED_LABEL_KEYWORDS) {
+                if (lower.contains(keyword)) return true;
+            }
         }
         return false;
     }
@@ -188,13 +255,28 @@ public class AccessibilityPlugin extends Plugin {
 
         JSArray result = new JSArray();
         for (ApplicationInfo app : apps) {
-            if (isExcluded(app.packageName)) continue;
+            // Label is needed for the exclusion check itself now (catches
+            // apps like Wells Fargo whose package id doesn't match any
+            // guessed prefix), so it's looked up before the isExcluded call,
+            // not just for display afterward.
+            String label = pm.getApplicationLabel(app).toString();
+            if (isExcluded(app.packageName, label)) continue;
             boolean isSystem = (app.flags & ApplicationInfo.FLAG_SYSTEM) != 0
                 || (app.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0;
+            // getLaunchIntentForPackage() returns null for anything with no
+            // launcher-visible entry point (pure background services, sync
+            // adapters, some system daemons) - those can never be brought to
+            // the foreground by the user, so they can never have on-screen
+            // text worth capturing regardless of what EXCLUDED_NOISE_PREFIXES
+            // happens to already cover by name. Reported as a field (not
+            // filtered out here) so the JS-side picker's "hide background-
+            // only apps" toggle stays reversible - same pattern as isSystemApp.
+            boolean hasLauncherIcon = pm.getLaunchIntentForPackage(app.packageName) != null;
             JSObject entry = new JSObject();
             entry.put("packageName", app.packageName);
-            entry.put("label", pm.getApplicationLabel(app).toString());
+            entry.put("label", label);
             entry.put("isSystemApp", isSystem);
+            entry.put("hasLauncherIcon", hasLauncherIcon);
             entry.put("category", categoryLabel(app.category));
             result.put(entry);
         }
@@ -257,27 +339,53 @@ public class AccessibilityPlugin extends Plugin {
         // total per package — sum across buckets before thresholding, or a
         // package with a few seconds each day over 7 days looks like several
         // separate sub-threshold blips instead of the ~minutes it actually adds to.
+        // Deliberately NOT INTERVAL_BEST: tested empirically on-device
+        // 2026-08-30 — INTERVAL_BEST silently resolves to a coarser bucket
+        // than the requested window on this device (e.g. asking for 7 days
+        // returned totals like 673144ms/~187hrs for a single package, which
+        // exceeds the 168hrs physically possible in 7 days), meaning it
+        // pulls in usage from outside the requested range. INTERVAL_DAILY
+        // summed manually is the only mode confirmed to respect the actual
+        // start/end bounds passed in.
         List<UsageStats> stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, start, end);
 
+        PackageManager pm = getContext().getPackageManager();
         java.util.Map<String, Long> totalForegroundMs = new java.util.HashMap<>();
         if (stats != null) {
             for (UsageStats stat : stats) {
                 String pkg = stat.getPackageName();
-                if (pkg == null || isExcluded(pkg)) continue;
+                if (pkg == null) continue;
+                // Label lookup so a package like com.wf.wellsfargomobile (no
+                // matching prefix) still gets excluded from "recently used"
+                // suggestions, same reasoning as listInstalledApps above.
+                String label = null;
+                try {
+                    label = pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString();
+                } catch (PackageManager.NameNotFoundException ignored) {}
+                if (isExcluded(pkg, label)) continue;
                 long existing = totalForegroundMs.containsKey(pkg) ? totalForegroundMs.get(pkg) : 0L;
                 totalForegroundMs.put(pkg, existing + stat.getTotalTimeInForeground());
             }
         }
 
         JSArray result = new JSArray();
+        // "usageMs" is a JS-side sort-by-active-time convenience — the total
+        // foreground ms per package was already being computed above and
+        // discarded (only the above-threshold package names were kept).
+        // Same threshold/window as "packages" (both come from the one
+        // queryUsageStats call above), so the two stay consistent with each
+        // other rather than representing two different measurements.
+        JSObject usageMs = new JSObject();
         for (java.util.Map.Entry<String, Long> entry : totalForegroundMs.entrySet()) {
             if (entry.getValue() >= MIN_FOREGROUND_MS_FOR_RECENT) {
                 result.put(entry.getKey());
+                usageMs.put(entry.getKey(), entry.getValue());
             }
         }
 
         JSObject ret = new JSObject();
         ret.put("packages", result);
+        ret.put("usageMs", usageMs);
         call.resolve(ret);
     }
 
@@ -299,6 +407,7 @@ public class AccessibilityPlugin extends Plugin {
             return;
         }
 
+        PackageManager pm = getContext().getPackageManager();
         Set<String> allowlist = new HashSet<>();
         try {
             List<Object> list = packages.toList();
@@ -306,7 +415,15 @@ public class AccessibilityPlugin extends Plugin {
                 String name = String.valueOf(pkg);
                 // Defense in depth: even if the caller tries to slip an excluded
                 // package into the allowlist directly, it's dropped here too.
-                if (!isExcluded(name)) allowlist.add(name);
+                // Label lookup here (not just package prefix) is what actually
+                // catches a package id EXCLUDED_PREFIXES doesn't know about —
+                // this is the save path, so a per-entry PackageManager call is
+                // fine (small list, one-time action, not a capture-time hot path).
+                String label = null;
+                try {
+                    label = pm.getApplicationLabel(pm.getApplicationInfo(name, 0)).toString();
+                } catch (PackageManager.NameNotFoundException ignored) {}
+                if (!isExcluded(name, label)) allowlist.add(name);
             }
         } catch (Exception e) {
             call.reject("Invalid packages array", e);

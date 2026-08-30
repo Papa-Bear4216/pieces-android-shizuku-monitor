@@ -1,6 +1,5 @@
 import { registerPlugin } from "@capacitor/core";
 import { recordEvent } from "./usage";
-import { flushUsageEvents } from "./flush";
 
 const AccessibilityScanner = registerPlugin<any>("AccessibilityScanner");
 
@@ -33,6 +32,17 @@ export function startPassiveCaptureListener(): void {
   // usage-event pipeline as a manual "Scan Screen Text" tap.
   AccessibilityScanner.addListener("passiveCapture", async (data: { package: string; appLabel: string; textNodes: string }) => {
     const timestamp = new Date().toISOString();
+
+    // Queued raw and untriaged (triaged left undefined), and NOT flushed
+    // from here. Deliberate as of 2026-08-30: on-device Gemini Nano/AICore
+    // was found empirically to refuse inference whenever a third-party app
+    // is foreground — which is always true during a real passive capture,
+    // since capture only fires on whatever app the user is actually using.
+    // triageQueue() (lib/triageQueue.ts) runs the summarization pass later,
+    // the next time this app itself is foreground (when AICore actually
+    // works), and is the only thing that flushes afterward. Sending raw
+    // text out from here would defeat the entire point of triage — it
+    // needs to happen before anything leaves the device, not after.
     await recordEvent({
       type: "system_telemetry",
       screen: "background",
@@ -41,7 +51,6 @@ export function startPassiveCaptureListener(): void {
       app_label: data.appLabel,
       timestamp,
     });
-    await flushUsageEvents();
     lastCapture = { pkg: data.package, at: timestamp };
     for (const cb of subscribers) cb(lastCapture);
   });

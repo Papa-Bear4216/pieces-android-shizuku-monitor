@@ -5,9 +5,11 @@ import Status from "./pages/Status";
 import Ask from "./pages/Ask";
 import Recent from "./pages/Recent";
 import { flushUsageEvents } from "./lib/flush";
+import { triageQueue } from "./lib/triageQueue";
 import { isShizukuToolkitEnabled, isScreenContextEnabled } from "./lib/config";
 import { startPassiveCaptureListener } from "./lib/passiveCapture";
 import { registerPlugin, Capacitor } from "@capacitor/core";
+import { App as CapacitorApp } from "@capacitor/app";
 
 const ShizukuMonitor = registerPlugin<any>('ShizukuMonitor');
 
@@ -52,41 +54,49 @@ export default function App() {
     // on screen context being enabled at all, same as the native service's
     // own check, so this doesn't register a no-op listener for users who
     // never opted in.
+    let removeAppStateListener: (() => void) | undefined;
     isScreenContextEnabled().then((enabled) => {
-      if (enabled && Capacitor.isNativePlatform()) startPassiveCaptureListener();
+      if (enabled && Capacitor.isNativePlatform()) {
+        startPassiveCaptureListener();
+        // Triage the backlog on every app foreground — this is the ONLY
+        // time on-device Gemini Nano/AICore was found to actually run
+        // inference (see passiveCapture.ts's comment: it refuses while a
+        // third-party app is foreground, which is always true during a
+        // real capture). Cold mount catches whatever accumulated while the
+        // app was closed; the isActive listener below catches whatever
+        // accumulates on subsequent resumes within the same install (user
+        // backgrounds pieces-android to use another app, more captures
+        // queue, then comes back) — mount alone would miss those.
+        triageQueue();
+        CapacitorApp.addListener("appStateChange", ({ isActive }) => {
+          if (isActive) triageQueue();
+        }).then((handle) => {
+          removeAppStateListener = () => handle.remove();
+        });
+      }
     });
 
     // Backstop flush for events queued during a long session on one screen
     // (e.g. repeated searches without navigating away) — per-screen mount
     // already flushes on every navigation, this just covers the gap.
+    // Deliberately flushUsageEvents, not triageQueue, on this interval:
+    // triage only works while foreground anyway (true whenever this
+    // interval is running), but re-running a full backlog scan every 5
+    // minutes is wasted work when the foreground-mount triageQueue() call
+    // above already caught up whatever was pending at open time.
     const id = setInterval(flushUsageEvents, USAGE_FLUSH_INTERVAL_MS);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      removeAppStateListener?.();
+    };
   }, []);
 
   return (
     <>
       {shizukuOffline && (
-        <div style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          right: 0,
-          background: "linear-gradient(to right, #ff4e50, #f9d423)",
-          color: "#fff",
-          padding: "16px",
-          textAlign: "center",
-          fontWeight: "bold",
-          zIndex: 9999,
-          boxShadow: "0 4px 6px rgba(0,0,0,0.1)",
-          fontFamily: "system-ui, sans-serif"
-        }}>
-          ⚠️ Shizuku is Offline. Please restart it via Wireless Debugging (your device may have rebooted).
-          <button 
-            onClick={() => setShizukuOffline(false)} 
-            style={{ marginLeft: "12px", background: "rgba(0,0,0,0.2)", border: "none", color: "white", padding: "4px 8px", borderRadius: "4px" }}
-          >
-            Dismiss
-          </button>
+        <div className="banner">
+          <span>⚠️ Shizuku is offline. Restart it via Wireless Debugging (your device may have rebooted).</span>
+          <button onClick={() => setShizukuOffline(false)}>Dismiss</button>
         </div>
       )}
       <HashRouter>

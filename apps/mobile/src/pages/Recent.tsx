@@ -70,15 +70,15 @@ export default function Recent() {
 
           {state.stale && (
             <>
-              <p className="hint" style={{ marginTop: 16 }}>
+              <p className="hint setup-note">
                 Showing the last synced copy from {new Date(state.stale.at).toLocaleString()}:
               </p>
               <ul>
                 {state.stale.summaries.map((s) => (
-                  <li key={s.id} style={{ marginBottom: 12, border: "1px solid #444", padding: 12, borderRadius: 8, opacity: 0.7 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <strong>{s.name}</strong>
-                      <span style={{ color: "#888", fontSize: 12 }}>{s.created}</span>
+                  <li key={s.id} className="card faded">
+                    <div className="card-row">
+                      <span className="card-title">{s.name}</span>
+                      <span className="card-meta">{s.created}</span>
                     </div>
                   </li>
                 ))}
@@ -97,23 +97,18 @@ export default function Recent() {
 
       {state.kind === "loaded" && (
         <>
-          <button onClick={load} style={{ marginBottom: 12 }}>
+          <button className="secondary" onClick={load} style={{ marginBottom: 12 }}>
             Refresh
           </button>
-          {state.summaries.length === 0 && <p>No workflow summaries yet.</p>}
+          {state.summaries.length === 0 && <p className="hint">No workflow summaries yet.</p>}
           <ul>
             {state.summaries.map((s) => (
-              <li key={s.id} style={{ marginBottom: 12, border: "1px solid #444", padding: 12, borderRadius: 8 }}>
-                <div
-                  onClick={() => setExpanded(expanded === s.id ? null : s.id)}
-                  style={{ cursor: "pointer", display: "flex", justifyContent: "space-between" }}
-                >
-                  <strong>{s.name}</strong>
-                  <span style={{ color: "#888", fontSize: 12 }}>{s.created}</span>
+              <li key={s.id} className="card clickable" onClick={() => setExpanded(expanded === s.id ? null : s.id)}>
+                <div className="card-row">
+                  <span className="card-title">{s.name}</span>
+                  <span className="card-meta">{s.created}</span>
                 </div>
-                {expanded === s.id && (
-                  <div style={{ marginTop: 8, whiteSpace: "pre-wrap", fontSize: 14, color: "#ccc" }}>{s.text}</div>
-                )}
+                {expanded === s.id && <div className="card-body">{s.text}</div>}
               </li>
             ))}
           </ul>
