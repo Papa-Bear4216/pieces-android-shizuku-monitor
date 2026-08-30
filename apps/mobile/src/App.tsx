@@ -4,6 +4,7 @@ import Setup from "./pages/Setup";
 import Status from "./pages/Status";
 import Ask from "./pages/Ask";
 import Recent from "./pages/Recent";
+import Search from "./pages/Search";
 import { flushUsageEvents } from "./lib/flush";
 import { triageQueue } from "./lib/triageQueue";
 import { isShizukuToolkitEnabled, isScreenContextEnabled } from "./lib/config";
@@ -106,6 +107,7 @@ export default function App() {
           <Route path="/status" element={<Status />} />
           <Route path="/ask" element={<Ask />} />
           <Route path="/recent" element={<Recent />} />
+          <Route path="/search" element={<Search />} />
         </Routes>
       </HashRouter>
     </>
