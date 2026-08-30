@@ -16,6 +16,11 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    androidResources {
+        // MediaPipe's AssetManager-backed setModelAssetPath needs the .tflite
+        // stored uncompressed in the APK.
+        noCompress 'tflite'
+    }
     buildTypes {
         release {
             minifyEnabled false
@@ -46,6 +51,10 @@ dependencies {
     // it's sent to PiecesOS — same dependency confirmed working in
     // bear-house-classic's OnDeviceGenAIPlugin.java.
     implementation 'com.google.mlkit:genai-prompt:1.0.0-beta1'
+    // MediaPipe Text Embedder for local semantic search — bundled tflite,
+    // L2-normalized 100-dim embeddings, fully offline. Not GenAI, so not
+    // subject to AICore's foreground-app inference restriction.
+    implementation 'com.google.mediapipe:tasks-text:0.10.14'
 }
 
 apply from: 'capacitor.build.gradle'

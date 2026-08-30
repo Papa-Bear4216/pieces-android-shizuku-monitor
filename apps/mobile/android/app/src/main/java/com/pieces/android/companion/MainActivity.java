@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ShizukuMonitorPlugin.class);
         registerPlugin(AccessibilityPlugin.class);
         registerPlugin(OnDeviceTriagePlugin.class);
+        registerPlugin(TextEmbedderPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
