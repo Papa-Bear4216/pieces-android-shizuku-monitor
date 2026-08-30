@@ -44,11 +44,28 @@ function extractPrefixList(source, varName) {
     throw new Error(`Could not find declaration for ${varName} in ${PLUGIN_PATH}`);
   }
   const blockStart = source.indexOf("(", declStart);
-  const blockEnd = source.indexOf(");", blockStart);
-  if (blockStart === -1 || blockEnd === -1) {
-    throw new Error(`Could not find the (...) block for ${varName}`);
+  if (blockStart === -1) {
+    throw new Error(`Could not find the opening ( for ${varName}`);
   }
-  const block = source.slice(blockStart, blockEnd);
+  // Found empirically 2026-08-30: a naive indexOf(");") false-matched
+  // inside a // comment containing the literal text "404'd);" partway
+  // through the list, silently truncating it. The actual closing paren
+  // always sits alone on its own trimmed line in this file's formatting
+  // (Arrays.asList(\n    "a",\n    "b"\n);), so scanning line-by-line for
+  // exactly that is immune to any "); substring appearing inside comment
+  // prose, wherever it happens to fall.
+  const restLines = source.slice(blockStart).split("\n");
+  let blockEndLineIdx = -1;
+  for (let i = 0; i < restLines.length; i++) {
+    if (restLines[i].trim() === ");") {
+      blockEndLineIdx = i;
+      break;
+    }
+  }
+  if (blockEndLineIdx === -1) {
+    throw new Error(`Could not find the closing ); line for ${varName}`);
+  }
+  const block = restLines.slice(0, blockEndLineIdx).join("\n");
 
   const prefixes = [];
   for (const rawLine of block.split("\n")) {
@@ -141,12 +158,22 @@ function main() {
   // least one prefix representing it? A label-only vendor (no prefix at
   // all) means the fast-path never catches it and every request pays the
   // label-lookup cost — not wrong, but worth knowing.
+  // Fixed 2026-08-30: the original 5-char-prefix-slice heuristic produced
+  // false positives for real matches like "1password" -> com.onepassword
+  // ("1pass" never appears in "onepassword") and "citibank" ->
+  // com.citi.citimobile ("citib" never appears in "citi.citimobile").
+  // Matching on the longest word in the keyword (>=4 chars, so short noise
+  // words like "app"/"pay" don't cause spurious matches) against the whole
+  // prefix string is more forgiving of exactly this kind of legitimate
+  // wording difference between a display name and a package id.
   console.log("\n--- Coverage cross-check (informational) ---");
   const uncoveredKeywords = labelKeywords.filter((kw) => {
-    const normalized = kw.replace(/\s+/g, "");
-    return !excludedPrefixes.some((p) =>
-      p.toLowerCase().includes(normalized.slice(0, 5))
-    );
+    const words = kw.toLowerCase().split(/\s+/).filter((w) => w.length >= 4);
+    const candidates = words.length > 0 ? words : [kw.toLowerCase().replace(/\s+/g, "")];
+    return !excludedPrefixes.some((p) => {
+      const lowerPrefix = p.toLowerCase();
+      return candidates.some((w) => lowerPrefix.includes(w));
+    });
   });
   if (uncoveredKeywords.length > 0) {
     console.log(`${uncoveredKeywords.length} label keyword(s) with no obviously-matching ` +

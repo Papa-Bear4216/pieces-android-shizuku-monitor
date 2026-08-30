@@ -108,6 +108,18 @@ public class AccessibilityPlugin extends Plugin {
         "com.sezzle.sezzlemobile",
         "com.truebill",              // Rocket Money (formerly Truebill)
         "com.paypal.android.p2pmobile", // real PayPal id; broader "com.paypal" above already covers it too
+        // Added 2026-08-30 to back 5 of the 9 EXCLUDED_LABEL_KEYWORDS entries
+        // that had no prefix fast-path (scripts/audit-exclusions found this).
+        // Each verified live via a direct HTTP 200 against its real Play
+        // Store listing page — not guessed. Zelle's real package id could
+        // NOT be verified (every candidate tried 404'd); it stays
+        // label-keyword-only until a real one is confirmed, deliberately
+        // not guessed here.
+        "com.coinbase.android",
+        "com.robinhood.android",
+        "com.myklarnamobile",        // Klarna
+        "com.onepassword.android",   // 1Password (current id; com.agilebits.onepassword above is the legacy one)
+        "com.citi.citimobile",       // Citi Mobile
         // Messaging / SMS / calling
         "com.google.android.apps.messaging",
         "com.samsung.android.messaging",
