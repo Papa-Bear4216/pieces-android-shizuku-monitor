@@ -105,6 +105,87 @@ describe("captureIndex", () => {
     expect(manifest.map((s) => s.month).sort()).toEqual(["2026-01", "2026-02"]);
   });
 
+  test("out-of-order month appends crossing MAX_INDEX drop oldest by timestamp, not last-appended month", async () => {
+    // Append in month order 03, 01, 02; enough to exceed MAX_INDEX by 4.
+    const perMonth = Math.ceil((MAX_INDEX + 4) / 3);
+    for (const month of ["03", "01", "02"]) {
+      for (let i = 0; i < perMonth; i++) {
+        const day = String((i % 27) + 1).padStart(2, "0");
+        const sec = String(i % 60).padStart(2, "0");
+        await appendEntry(entry(`2026-${month}-${day}T00:00:${sec}.${String(i).padStart(3, "0")}Z`));
+      }
+    }
+    const index = await readIndex();
+    expect(index).toHaveLength(MAX_INDEX);
+    // Dropped entries are the oldest by timestamp → from 2026-01, not 2026-03.
+    const jan = JSON.parse(store.get(shardKey("2026-01"))!) as IndexEntry[];
+    expect(jan.length).toBeLessThan(perMonth); // Jan shard shrank
+    expect(store.get(shardKey("2026-03"))!.length).toBeGreaterThan(0);
+    const marCount = (JSON.parse(store.get(shardKey("2026-03"))!) as IndexEntry[]).length;
+    expect(marCount).toBe(perMonth); // March untouched
+  });
+
+  test("corrupt shard during eviction does not wipe the index", async () => {
+    // Jan small so eviction must walk PAST it to the corrupt Feb shard.
+    const manifest = [
+      { month: "2026-01", count: 3 },
+      { month: "2026-02", count: 5 }, // manifest lies — shard is corrupt (real 0)
+      { month: "2026-03", count: MAX_INDEX },
+    ];
+    store.set(MANIFEST_KEY, JSON.stringify(manifest));
+    store.set(
+      shardKey("2026-01"),
+      JSON.stringify(
+        Array.from({ length: 3 }, (_, i) => entry(`2026-01-01T00:00:00.${String(i).padStart(3, "0")}Z`)),
+      ),
+    );
+    store.set(shardKey("2026-02"), "{corrupt"); // middle shard corrupt
+    store.set(
+      shardKey("2026-03"),
+      JSON.stringify(
+        Array.from({ length: MAX_INDEX }, (_, i) =>
+          entry(`2026-03-01T00:00:00.${String(i).padStart(4, "0")}Z`),
+        ),
+      ),
+    );
+
+    // total per (lying) manifest = MAX_INDEX + 8 → eviction fires, hits Feb
+    await appendEntry(entry("2026-03-15T12:00:00.000Z"));
+
+    const index = await readIndex();
+    // Not wiped: eviction drops the 3 Jan entries, self-heals on corrupt Feb,
+    // and stops — the MAX_INDEX March entries survive intact.
+    expect(index.some((e) => e.timestamp.startsWith("2026-03"))).toBe(true);
+    expect(index.some((e) => e.timestamp.startsWith("2026-01"))).toBe(false); // Jan fully evicted
+    expect(index.length).toBe(MAX_INDEX);
+    expect(store.get(shardKey("2026-03"))).toBeDefined();
+    expect((JSON.parse(store.get(shardKey("2026-03"))!) as IndexEntry[]).length).toBeGreaterThanOrEqual(
+      MAX_INDEX - 1,
+    );
+  });
+
+  test("out-of-order same-month appends then eviction drop the older-timestamp entry", async () => {
+    // Fill Feb to MAX_INDEX - 1.
+    for (let i = 0; i < MAX_INDEX - 1; i++) {
+      await appendEntry(entry(`2026-02-01T00:00:00.${String(i).padStart(4, "0")}Z`));
+    }
+    // Two Jan entries appended newest-first; one must be dropped (total = MAX_INDEX + 1).
+    await appendEntry(entry("2026-01-01T00:00:09.000Z")); // newer
+    await appendEntry(entry("2026-01-01T00:00:01.000Z")); // older
+
+    const index = await readIndex();
+    expect(index).toHaveLength(MAX_INDEX);
+    const janLeft = index.filter((e) => e.timestamp.startsWith("2026-01"));
+    expect(janLeft).toHaveLength(1);
+    expect(janLeft[0].timestamp).toBe("2026-01-01T00:00:09.000Z"); // older one dropped
+  });
+
+  test("corrupt legacy JSON in migration → readIndex returns [] and legacy key removed", async () => {
+    store.set(LEGACY_KEY, "{bad json");
+    expect(await readIndex()).toEqual([]);
+    expect(store.get(LEGACY_KEY)).toBeUndefined();
+  });
+
   test("append does NOT rewrite unrelated months' shards", async () => {
     await appendEntry(entry("2026-01-15T00:00:00Z"));
     await appendEntry(entry("2026-03-15T00:00:00Z"));

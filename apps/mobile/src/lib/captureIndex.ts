@@ -133,8 +133,16 @@ async function evict(manifest: ManifestShard[]): Promise<void> {
   let total = manifest.reduce((n, s) => n + s.count, 0);
   while (total > MAX_INDEX && manifest.length > 0) {
     const oldest = manifest[0];
-    const overflow = total - MAX_INDEX;
     const shard = await readShard(oldest.month);
+    // Self-heal: a corrupt shard (readShard → []) or stale manifest count
+    // from a crash mid-write would otherwise let the loop delete every
+    // shard. Reconcile total/count with what was actually read first.
+    if (shard.length !== oldest.count) {
+      total += shard.length - oldest.count;
+      oldest.count = shard.length;
+      if (total <= MAX_INDEX) break;
+    }
+    const overflow = total - MAX_INDEX;
     if (shard.length <= overflow) {
       // whole shard goes
       await Preferences.remove({ key: shardKey(oldest.month) });
@@ -158,12 +166,19 @@ export async function appendEntry(e: IndexEntry): Promise<void> {
   const shard = await readShard(month);
   if (shard.some((x) => x.id === e.id)) return; // idempotent — triageQueue() may re-walk
   shard.push(e);
+  // Keep intra-shard order ascending by timestamp: appends can be
+  // backdated (a re-walked old capture), and evict()/readIndex assume
+  // front-of-shard == oldest. Shard is one month, so this is cheap.
+  shard.sort((a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0));
   await writeShard(month, shard);
 
   const idx = manifest.findIndex((s) => s.month === month);
   if (idx === -1) manifest.push({ month, count: shard.length });
   else manifest[idx].count = shard.length;
 
+  // evict() walks manifest[0] as the oldest month — it must be sorted
+  // BEFORE eviction, not just before persisting (writeManifest sorts too).
+  manifest.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
   await evict(manifest);
   await writeManifest(manifest);
 }
