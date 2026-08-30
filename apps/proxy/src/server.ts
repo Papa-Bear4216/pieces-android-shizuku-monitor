@@ -5,7 +5,7 @@ import { Agent, setGlobalDispatcher } from "undici";
 import { PiecesClient } from "@pieces-android/pieces-api";
 import { findAllowedRoute } from "@pieces-android/allowlist";
 import { isValidBearerToken } from "./auth.ts";
-import { summarizeTelemetry, seedToPiecesOS, seedWorkstreamEvent, TelemetryEvent } from "./seeder.ts";
+import { summarizeTelemetry, androidTimelineReadable, seedToPiecesOS, seedWorkstreamEvent, TelemetryEvent } from "./seeder.ts";
 import { SeedQueue } from "./seed-queue.js";
 import { shouldSeed } from "./surprisal.js";
 import { askOllamaFallback } from "./ollama-fallback.js";
@@ -293,11 +293,21 @@ const server = createServer(async (req, res) => {
         // gets the same reconciliation guarantee instead of being silently
         // lost if PiecesOS happens to be down for this specific write and
         // not the asset write moments earlier.
+        //
+        // The timeline entry uses the on-device Gemini summary (prefixed
+        // "[Android · <app>]" so the phone stream is recognisable alongside
+        // native calendar/IDE/browser events), NOT the fuller AndroidContext
+        // block that the asset store gets — see androidTimelineReadable.
+        // A batch shares one package, so batch[0]'s label represents it.
+        const timelineReadable =
+          batch.length === 1
+            ? androidTimelineReadable(batch[0])
+            : batch.map((e) => androidTimelineReadable(e)).join("\n\n");
         try {
-          await seedWorkstreamEvent(PIECES_BASE_URL, bodyText);
+          await seedWorkstreamEvent(PIECES_BASE_URL, timelineReadable);
         } catch (err) {
           console.warn("PiecesOS not reachable for workstream event; queued for retry.", err);
-          await seedQueue.enqueue(bodyText, "", "workstream_event");
+          await seedQueue.enqueue(timelineReadable, "", "workstream_event");
         }
       }
 
