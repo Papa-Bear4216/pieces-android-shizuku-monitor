@@ -42,6 +42,25 @@ describe("Search page", () => {
     );
   });
 
+  test("renders a server hit's human-readable timestamp literally and formats a local ISO timestamp", async () => {
+    vi.mocked(semanticSearch).mockResolvedValue({
+      hits: [
+        { text: "wrote the report", score: 0.7, timestamp: "3 days ago", source: "server" },
+        { text: "bought a lamp", score: 0.8, timestamp: "2026-02-01T00:00:00Z", source: "local", app_label: "Amazon" },
+      ],
+      serverSkipped: false,
+      mode: "relevant",
+    });
+    render(<Search />);
+    await type("stuff");
+    await waitFor(() => expect(screen.getByText("wrote the report")).toBeTruthy());
+    const cards = screen.getAllByRole("listitem");
+    expect(within(cards[0]).getByText("3 days ago")).toBeTruthy();
+    expect(within(cards[0]).queryByText(/invalid date/i)).toBeNull();
+    const localMeta = within(cards[1]).getByText(new Date("2026-02-01T00:00:00Z").toLocaleString());
+    expect(localMeta).toBeTruthy();
+  });
+
   test("shows the offline banner when serverSkipped", async () => {
     vi.mocked(semanticSearch).mockResolvedValue({ hits: [], serverSkipped: true, mode: "relevant" });
     render(<Search />);

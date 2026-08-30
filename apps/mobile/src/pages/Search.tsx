@@ -11,6 +11,14 @@ type State =
 
 const DEBOUNCE_MS = 300;
 
+// Server hits carry human-readable timestamps ("3 days ago"); local hits carry
+// ISO strings. Format ISO strings, pass anything else through unchanged.
+function formatHitTime(ts: string): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return isNaN(d.getTime()) ? ts : d.toLocaleString();
+}
+
 export default function Search() {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -104,7 +112,7 @@ export default function Search() {
               <li key={i} className="card clickable" onClick={() => setExpanded(expanded === i ? null : i)}>
                 <div className="card-row">
                   <span className="card-title">{h.source === "local" ? "On this device" : "From home PC"}</span>
-                  <span className="card-meta">{new Date(h.timestamp).toLocaleString()}</span>
+                  <span className="card-meta">{formatHitTime(h.timestamp)}</span>
                 </div>
                 <div className={expanded === i ? "card-body" : "card-body truncated"}>{h.text}</div>
                 {h.app_label && <span className="card-meta">{h.app_label}</span>}
