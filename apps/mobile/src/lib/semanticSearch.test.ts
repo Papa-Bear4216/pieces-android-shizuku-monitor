@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi, afterEach } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("./textEmbedder", () => ({
   embed: vi.fn(),
@@ -16,11 +16,11 @@ vi.mock("./api", async (importOriginal) => {
 import { embed, embedBatch, embedderAvailable } from "./textEmbedder";
 import { readIndex } from "./captureIndex";
 import { getWorkstreamSummaries, HomeNodeUnreachableError } from "./api";
-import { semanticSearch, EmbedderUnavailableError, MIN_SCORE } from "./semanticSearch";
+import { semanticSearch, EmbedderUnavailableError, MIN_SCORE, __resetServerCache } from "./semanticSearch";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.resetModules();
+  __resetServerCache();
   vi.mocked(embedderAvailable).mockResolvedValue(true);
   vi.mocked(getWorkstreamSummaries).mockResolvedValue([]);
   vi.mocked(embedBatch).mockResolvedValue([]);

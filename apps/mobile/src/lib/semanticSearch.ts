@@ -41,6 +41,11 @@ export const DEFAULT_LIMIT = 20;
 // the lifetime of this module (one app session).
 const serverVectorCache = new Map<string, number[]>();
 
+/** @internal test-only — clears the session cache so tests don't leak vectors across cases */
+export function __resetServerCache(): void {
+  serverVectorCache.clear();
+}
+
 function dot(a: number[], b: number[]): number {
   let sum = 0;
   const n = Math.min(a.length, b.length);
