@@ -119,6 +119,7 @@ export default function Recent() {
         <button onClick={() => navigate("/setup")}>Setup</button>
         <button onClick={() => navigate("/status")}>Status</button>
         <button onClick={() => navigate("/ask")}>Ask</button>
+        <button onClick={() => navigate("/search")}>Search</button>
       </nav>
     </div>
   );

@@ -323,6 +323,7 @@ export default function Setup() {
         <button onClick={() => navigate("/status")}>Status</button>
         <button onClick={() => navigate("/ask")}>Ask</button>
         <button onClick={() => navigate("/recent")}>Recent</button>
+        <button onClick={() => navigate("/search")}>Search</button>
       </nav>
     </div>
   );

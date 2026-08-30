@@ -103,6 +103,7 @@ export default function Ask() {
         <button onClick={() => navigate("/setup")}>Setup</button>
         <button onClick={() => navigate("/status")}>Status</button>
         <button onClick={() => navigate("/recent")}>Recent</button>
+        <button onClick={() => navigate("/search")}>Search</button>
       </nav>
     </div>
   );
