@@ -1,15 +1,22 @@
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { Preferences } from "@capacitor/preferences";
+// @ts-expect-error — test-only export from the setup mock
+import { __store } from "@capacitor/preferences";
 import { appendEntry, readIndex, clearIndex, MAX_INDEX, type IndexEntry } from "./captureIndex";
 
-const KEY = "pieces-android:captureIndex";
+const LEGACY_KEY = "pieces-android:captureIndex";
+const MANIFEST_KEY = "pieces-android:captureIndex:months";
+const shardKey = (month: string) => `pieces-android:captureIndex:${month}`;
+
+const store = __store as Map<string, string>;
 
 function entry(ts: string): IndexEntry {
   return { id: `local:${ts}`, text: `summary ${ts}`, vector: [0.1, 0.2], timestamp: ts, source: "local" };
 }
 
-beforeEach(async () => {
-  await Preferences.remove({ key: KEY });
+beforeEach(() => {
+  store.clear();
+  vi.mocked(Preferences.set).mockClear();
 });
 
 describe("captureIndex", () => {
@@ -20,31 +27,95 @@ describe("captureIndex", () => {
     expect(index[0].id).toBe("local:2026-01-01T00:00:00Z");
   });
 
-  test("appendEntry is idempotent on duplicate id", async () => {
+  test("appendEntry is idempotent on duplicate id (same month)", async () => {
     await appendEntry(entry("2026-01-01T00:00:00Z"));
     await appendEntry(entry("2026-01-01T00:00:00Z"));
     expect(await readIndex()).toHaveLength(1);
   });
 
-  test("appendEntry evicts oldest past MAX_INDEX, keeping newest", async () => {
-    for (let i = 0; i < MAX_INDEX + 5; i++) {
-      const ts = `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z`;
-      await appendEntry({ ...entry(ts) });
+  test("entries across multiple months all show up, ascending by timestamp", async () => {
+    await appendEntry(entry("2026-03-15T00:00:00Z"));
+    await appendEntry(entry("2026-01-05T00:00:00Z"));
+    await appendEntry(entry("2026-02-20T00:00:00Z"));
+    const index = await readIndex();
+    expect(index.map((e) => e.timestamp)).toEqual([
+      "2026-01-05T00:00:00Z",
+      "2026-02-20T00:00:00Z",
+      "2026-03-15T00:00:00Z",
+    ]);
+  });
+
+  test("eviction: appending past MAX_INDEX drops oldest, empties old shards, prunes manifest", async () => {
+    // Small first month that must be fully drained by eviction.
+    for (let i = 0; i < 3; i++) {
+      await appendEntry(entry(`2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z`));
     }
+    // Remaining MAX_INDEX + 2 spread across Feb/Mar so total overflows by 5,
+    // fully draining the 3-entry January shard plus 2 more from February.
+    const extra = MAX_INDEX + 2;
+    for (let i = 0; i < extra; i++) {
+      const month = i < extra / 2 ? "02" : "03";
+      const day = String((i % 27) + 1).padStart(2, "0");
+      const sec = String(i % 60).padStart(2, "0");
+      await appendEntry(entry(`2026-${month}-${day}T00:00:${sec}.${String(i).padStart(3, "0")}Z`));
+    }
+
     const index = await readIndex();
     expect(index).toHaveLength(MAX_INDEX);
-    // oldest 5 dropped
-    expect(index[0].id).toBe("local:2026-01-01T00:00:05.000Z");
+    // The 3 January entries and the 2 oldest February entries were dropped.
+    expect(index.some((e) => e.timestamp.startsWith("2026-01"))).toBe(false);
+
+    const manifest = JSON.parse(store.get(MANIFEST_KEY)!) as { month: string; count: number }[];
+    expect(manifest.some((s) => s.month === "2026-01")).toBe(false);
+    expect(store.get(shardKey("2026-01"))).toBeUndefined();
+    expect(manifest.reduce((n, s) => n + s.count, 0)).toBe(MAX_INDEX);
   });
 
-  test("readIndex returns [] on corrupt blob", async () => {
-    await Preferences.set({ key: KEY, value: "{not json" });
-    expect(await readIndex()).toEqual([]);
-  });
-
-  test("clearIndex empties the store", async () => {
+  test("corrupt shard blob → that shard treated as empty, others still returned", async () => {
     await appendEntry(entry("2026-01-01T00:00:00Z"));
+    await appendEntry(entry("2026-02-01T00:00:00Z"));
+    store.set(shardKey("2026-02"), "{not json");
+    const index = await readIndex();
+    expect(index.map((e) => e.timestamp)).toEqual(["2026-01-01T00:00:00Z"]);
+  });
+
+  test("clearIndex removes all shards + manifest + legacy key", async () => {
+    await appendEntry(entry("2026-01-01T00:00:00Z"));
+    await appendEntry(entry("2026-02-01T00:00:00Z"));
+    store.set(LEGACY_KEY, "[]");
     await clearIndex();
     expect(await readIndex()).toEqual([]);
+    expect(store.get(MANIFEST_KEY)).toBeUndefined();
+    expect(store.get(shardKey("2026-01"))).toBeUndefined();
+    expect(store.get(shardKey("2026-02"))).toBeUndefined();
+    expect(store.get(LEGACY_KEY)).toBeUndefined();
+  });
+
+  test("migration: legacy blob is distributed into shards and the legacy key removed", async () => {
+    const legacy = [entry("2026-01-10T00:00:00Z"), entry("2026-02-11T00:00:00Z")];
+    store.set(LEGACY_KEY, JSON.stringify(legacy));
+
+    const index = await readIndex();
+    expect(index.map((e) => e.timestamp)).toEqual([
+      "2026-01-10T00:00:00Z",
+      "2026-02-11T00:00:00Z",
+    ]);
+    expect(store.get(LEGACY_KEY)).toBeUndefined();
+    const manifest = JSON.parse(store.get(MANIFEST_KEY)!) as { month: string }[];
+    expect(manifest.map((s) => s.month).sort()).toEqual(["2026-01", "2026-02"]);
+  });
+
+  test("append does NOT rewrite unrelated months' shards", async () => {
+    await appendEntry(entry("2026-01-15T00:00:00Z"));
+    await appendEntry(entry("2026-03-15T00:00:00Z"));
+
+    vi.mocked(Preferences.set).mockClear();
+    await appendEntry(entry("2026-03-16T00:00:00Z")); // append into March
+
+    const shardWrites = vi.mocked(Preferences.set).mock.calls
+      .map((c) => c[0].key)
+      .filter((k) => k.startsWith("pieces-android:captureIndex:") && k !== MANIFEST_KEY);
+    expect(shardWrites).toEqual([shardKey("2026-03")]);
+    expect(shardWrites).not.toContain(shardKey("2026-01"));
   });
 });
