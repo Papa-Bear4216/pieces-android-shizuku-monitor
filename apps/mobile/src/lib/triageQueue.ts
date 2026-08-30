@@ -1,6 +1,8 @@
 import { peekQueue, replaceQueue, type UsageEvent } from "./usage";
 import { flushUsageEvents } from "./flush";
 import { tryOnDeviceTriage } from "./onDeviceTriage";
+import { embed } from "./textEmbedder";
+import { appendEntry } from "./captureIndex";
 
 // Runs the on-device triage pass over any queued background captures that
 // haven't been triaged yet, then flushes. Call this on app foreground
@@ -30,6 +32,21 @@ export async function triageQueue(): Promise<void> {
         triaged: true,
       };
       queue[i] = rewritten;
+
+      // Also persist the summary to the searchable capture index (survives
+      // the flush-and-delete cycle below). Embedding failure is non-fatal —
+      // the entry just isn't indexed, exactly like a triage fallback.
+      const emb = await embed(triaged.summary);
+      if (emb.ok) {
+        await appendEntry({
+          id: `local:${event.timestamp}`,
+          text: triaged.summary,
+          vector: emb.vector,
+          timestamp: event.timestamp,
+          source: "local",
+          app_label: event.app_label,
+        });
+      }
     } else {
       queue[i] = { ...event, triaged: false };
     }
