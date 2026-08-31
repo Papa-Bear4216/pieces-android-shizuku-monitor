@@ -28,3 +28,4 @@ scripts/play-category-scrape/*.txt
 scripts/play-category-scrape/queue.json
 scripts/play-category-scrape/done.json
 scripts/play-category-scrape/scrape.log
+.superpowers/
