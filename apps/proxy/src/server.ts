@@ -34,9 +34,17 @@ async function pipeToRegistryApp(batch: TelemetryEvent[], packageName: string, a
   if (!REGISTRY_INGEST_URL) return;
   try {
     const timestamp = batch[0]?.timestamp || new Date().toISOString();
-    const idempotencyKey = `shizuku-${packageName}-${timestamp}`;
+    const idempotencyKey = `shizuku-${packageName}-${timestamp}-${batch.length}`;
+    let usageDurationMs = 0;
+    if (batch.length > 1 && batch[0]?.timestamp && batch[batch.length - 1]?.timestamp) {
+      const t0 = new Date(batch[0].timestamp).getTime();
+      const t1 = new Date(batch[batch.length - 1].timestamp).getTime();
+      if (!isNaN(t0) && !isNaN(t1)) {
+        usageDurationMs = Math.max(0, Math.abs(t1 - t0));
+      }
+    }
     const payload = {
-      collector: "phone_usage",
+      collector: process.env.REGISTRY_COLLECTOR_TYPE || "shizuku",
       sourceId: process.env.SHIZUKU_DEVICE_ID || "shizuku-companion-device",
       sourceLabel: "Shizuku Monitor",
       rawLabel: appLabel || packageName,
@@ -44,7 +52,7 @@ async function pipeToRegistryApp(batch: TelemetryEvent[], packageName: string, a
       idempotencyKey,
       payload: {
         usageCount: batch.length,
-        usageDurationMs: 0,
+        usageDurationMs,
         windowHours: 1,
       },
     };

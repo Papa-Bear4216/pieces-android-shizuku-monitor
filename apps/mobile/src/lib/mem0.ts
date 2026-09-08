@@ -1,6 +1,8 @@
 // Lightweight browser-compatible Mem0 client for mobile runtime.
-// Avoids bundling heavyweight Node database drivers (mongodb, cassandra, redis)
-// while supporting telemetry logging.
+// Telemetry queues locally and sends to the proxy without bundling or
+// exposing direct external cloud Mem0 API keys in client APKs.
+
+import { recordEvent } from "./usage";
 
 export interface AddMemoryOptions {
   user_id?: string;
@@ -11,11 +13,9 @@ export interface AddMemoryOptions {
 }
 
 export class Memory {
-  private apiKey?: string;
-  private userId: string;
+  readonly userId: string;
 
   constructor(options?: { apiKey?: string; userId?: string }) {
-    this.apiKey = options?.apiKey;
     this.userId = options?.userId || 'pieces-android-mobile-user';
   }
 
@@ -24,26 +24,25 @@ export class Memory {
     options?: AddMemoryOptions
   ): Promise<void> {
     const text = typeof content === 'string' ? content : JSON.stringify(content);
-    if (this.apiKey) {
-      try {
-        await fetch('https://api.mem0.ai/v1/memories/', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Token ${this.apiKey}`,
-          },
-          body: JSON.stringify({
-            messages: [{ role: 'user', content: text }],
-            user_id: options?.user_id || this.userId,
-            metadata: {
-              category: options?.category || 'telemetry',
-              ...(options?.metadata || {}),
-            },
-          }),
-        });
-      } catch (err) {
-        console.warn('Mem0 telemetry logging skipped:', err);
-      }
+    const meta = options?.metadata;
+    const pkg = typeof meta?.package === 'string' ? meta.package : undefined;
+    const appLabel =
+      typeof meta?.app_label === 'string'
+        ? meta.app_label
+        : typeof meta?.appLabel === 'string'
+        ? meta.appLabel
+        : undefined;
+    try {
+      await recordEvent({
+        type: 'system_telemetry',
+        screen: 'background',
+        telemetry: text,
+        package: pkg,
+        app_label: appLabel,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('Failed to queue telemetry event to proxy queue:', err);
     }
   }
 }

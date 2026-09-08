@@ -1,10 +1,12 @@
 import { Preferences } from "@capacitor/preferences";
-import { Memory } from "mem0ai/oss";
-
 // Local queue of usage events, flushed to /mobile/usage-report by flush.ts.
 // Stored in Preferences (not localStorage) for consistency with config.ts,
 // and because these events can contain real query/question text — the user
 // explicitly chose full detail over anonymized/aggregated tracking.
+//
+// Telemetry queues locally and is dispatched to the home proxy via flush.ts.
+// The home proxy securely attaches server-side MEM0_API_KEY when processing
+// usage reports, avoiding bundling or exposing Mem0 cloud API keys in client APKs.
 
 const QUEUE_KEY = "pieces-android:usageQueue";
 const MAX_QUEUE_SIZE = 500; // backstop against unbounded growth if flush stays broken for a long time
@@ -30,21 +32,11 @@ async function writeQueue(events: UsageEvent[]): Promise<void> {
   await Preferences.set({ key: QUEUE_KEY, value: JSON.stringify(events) });
 }
 
-// Initialize the Mem0 Memory client
-const m = new Memory();
-
 export async function recordEvent(event: UsageEvent): Promise<void> {
   const queue = await readQueue();
   queue.push(event);
   if (queue.length > MAX_QUEUE_SIZE) queue.splice(0, queue.length - MAX_QUEUE_SIZE);
   await writeQueue(queue);
-
-  // Send the event data to Mem0
-  try {
-    await m.add(JSON.stringify(event), { metadata: { category: "telemetry" } });
-  } catch (error) {
-    console.error("Failed to log event to Mem0:", error);
-  }
 }
 
 export async function peekQueue(): Promise<UsageEvent[]> {
