@@ -1,4 +1,5 @@
 import { Preferences } from "@capacitor/preferences";
+import { Memory } from "mem0ai/oss";
 
 // Local queue of usage events, flushed to /mobile/usage-report by flush.ts.
 // Stored in Preferences (not localStorage) for consistency with config.ts,
@@ -29,11 +30,21 @@ async function writeQueue(events: UsageEvent[]): Promise<void> {
   await Preferences.set({ key: QUEUE_KEY, value: JSON.stringify(events) });
 }
 
+// Initialize the Mem0 Memory client
+const m = new Memory();
+
 export async function recordEvent(event: UsageEvent): Promise<void> {
   const queue = await readQueue();
   queue.push(event);
   if (queue.length > MAX_QUEUE_SIZE) queue.splice(0, queue.length - MAX_QUEUE_SIZE);
   await writeQueue(queue);
+
+  // Send the event data to Mem0
+  try {
+    await m.add(JSON.stringify(event), { metadata: { category: "telemetry" } });
+  } catch (error) {
+    console.error("Failed to log event to Mem0:", error);
+  }
 }
 
 export async function peekQueue(): Promise<UsageEvent[]> {

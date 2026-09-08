@@ -18,12 +18,47 @@ const MEM0_API_KEY = process.env.MEM0_API_KEY;
 const MEM0_USER_ID = process.env.MEM0_USER_ID ?? "pieces-android-user";
 const mem0Client = MEM0_API_KEY ? new MemoryClient({ apiKey: MEM0_API_KEY }) : null;
 
+const REGISTRY_INGEST_URL = process.env.REGISTRY_INGEST_URL;
+const REGISTRY_AUTH_TOKEN = process.env.REGISTRY_AUTH_TOKEN;
+
 async function addToMem0(content: string) {
   if (!mem0Client) return;
   try {
     await mem0Client.add([{ role: "user", content }], { user_id: MEM0_USER_ID });
   } catch (e) {
     console.warn("Failed to save to Mem0", e);
+  }
+}
+
+async function pipeToRegistryApp(batch: TelemetryEvent[], packageName: string, appLabel?: string) {
+  if (!REGISTRY_INGEST_URL) return;
+  try {
+    const timestamp = batch[0]?.timestamp || new Date().toISOString();
+    const idempotencyKey = `shizuku-${packageName}-${timestamp}`;
+    const payload = {
+      collector: "phone_usage",
+      sourceId: process.env.SHIZUKU_DEVICE_ID || "shizuku-companion-device",
+      sourceLabel: "Shizuku Monitor",
+      rawLabel: appLabel || packageName,
+      rawIdentity: packageName,
+      idempotencyKey,
+      payload: {
+        usageCount: batch.length,
+        usageDurationMs: 0,
+        windowHours: 1,
+      },
+    };
+    await fetch(REGISTRY_INGEST_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(REGISTRY_AUTH_TOKEN ? { Authorization: `Bearer ${REGISTRY_AUTH_TOKEN}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    });
+  } catch (err) {
+    console.warn("Failed to pipe telemetry to registry-app:", err);
   }
 }
 
@@ -268,6 +303,7 @@ const server = createServer(async (req, res) => {
         if (!novel) continue;
 
         await addToMem0(bodyText);
+        await pipeToRegistryApp(batch, packageName, batch[0]?.app_label);
 
         try {
           await seedToPiecesOS(PIECES_BASE_URL, bodyText, title);
