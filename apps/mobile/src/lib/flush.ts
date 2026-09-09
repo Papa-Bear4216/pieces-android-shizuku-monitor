@@ -1,30 +1,39 @@
-import { getProxyBaseUrl, getProxyToken } from "./config";
+import { getConnectionTargets } from "./config";
 import { peekQueue, clearSentEvents } from "./usage";
 
-// Best-effort batch flush of queued usage events. Never throws — telemetry
-// must never surface an error to the UI or affect HomeNodeUnreachableError
-// handling on the screens driving real user actions.
+// Best-effort batch flush of queued usage events with auto-failover.
+// Tries LAN proxy first; if disconnected/away from home, falls back to remote gateway.
 export async function flushUsageEvents(): Promise<void> {
   try {
     const events = await peekQueue();
     if (events.length === 0) return;
 
-    const [baseUrl, token] = await Promise.all([getProxyBaseUrl(), getProxyToken()]);
-    if (!baseUrl || !token) return;
+    const targets = await getConnectionTargets();
+    if (targets.length === 0) return;
 
-    const res = await fetch(`${baseUrl}/mobile/usage-report`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ events }),
-    });
+    for (let i = 0; i < targets.length; i++) {
+      const target = targets[i];
+      const timeoutMs = targets.length > 1 && i === 0 && target.mode === "lan" ? 2500 : 8000;
 
-    if (res.ok) {
-      await clearSentEvents(events.length);
+      try {
+        const res = await fetch(`${target.baseUrl}/mobile/usage-report`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${target.token}`,
+          },
+          body: JSON.stringify({ events }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+
+        if (res.ok) {
+          await clearSentEvents(events.length);
+          return;
+        }
+      } catch {
+        // Fall back to next target (e.g. Plan B gateway)
+      }
     }
-    // Any non-2xx (including 503 home-offline) leaves the queue intact for the next flush attempt.
   } catch {
     // Network error, offline, whatever — silently retry on the next flush call.
   }
