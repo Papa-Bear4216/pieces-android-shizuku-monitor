@@ -267,8 +267,11 @@ const server = createServer(async (req, res) => {
           batch.length === 1
             ? summarizeTelemetry(batch[0])
             : batch.map((e) => summarizeTelemetry(e)).join("\n\n===\n\n");
-        const title =
-          batch.length === 1
+        const rawTelemetry = batch[0]?.telemetry ?? "";
+        const actionMatch = rawTelemetry.match(/ACTION:\s*(.+)/)?.[1]?.trim();
+        const title = actionMatch
+          ? `Android Activity: ${actionMatch}`
+          : batch.length === 1
             ? "Android Context: System Telemetry"
             : `Android Context: System Telemetry (${batch.length} events batched)`;
 
@@ -279,11 +282,15 @@ const server = createServer(async (req, res) => {
 
         await addToMem0(bodyText);
 
-        try {
-          await seedToPiecesOS(PIECES_BASE_URL, bodyText, title);
-        } catch (err) {
-          console.warn("PiecesOS not reachable for seeding; queued for retry.", err);
-          await seedQueue.enqueue(bodyText, title, "asset");
+        // Ambient workstream telemetry is routed strictly to WorkstreamEvents.
+        // Asset creation (/assets/create) is skipped for Nano action streams to avoid store bloat.
+        if (!actionMatch) {
+          try {
+            await seedToPiecesOS(PIECES_BASE_URL, bodyText, title);
+          } catch (err) {
+            console.warn("PiecesOS not reachable for seeding; queued for retry.", err);
+            await seedQueue.enqueue(bodyText, title, "asset");
+          }
         }
 
         // Also write to the workstream-event stream (feeds PiecesOS's own
@@ -294,15 +301,15 @@ const server = createServer(async (req, res) => {
         // lost if PiecesOS happens to be down for this specific write and
         // not the asset write moments earlier.
         //
-        // The timeline entry uses the on-device Gemini summary (prefixed
-        // "[Android · <app>]" so the phone stream is recognisable alongside
-        // native calendar/IDE/browser events), NOT the fuller AndroidContext
-        // block that the asset store gets — see androidTimelineReadable.
-        // A batch shares one package, so batch[0]'s label represents it.
+        // If an on-device Gemini Nano action block is present, send the clean
+        // formatted summary (bodyText) directly into the workstream timeline;
+        // otherwise fall back to the [Android · <app>] summary.
         const timelineReadable =
-          batch.length === 1
-            ? androidTimelineReadable(batch[0])
-            : batch.map((e) => androidTimelineReadable(e)).join("\n\n");
+          actionMatch
+            ? bodyText
+            : batch.length === 1
+              ? androidTimelineReadable(batch[0])
+              : batch.map((e) => androidTimelineReadable(e)).join("\n\n");
         try {
           await seedWorkstreamEvent(PIECES_BASE_URL, timelineReadable);
         } catch (err) {
