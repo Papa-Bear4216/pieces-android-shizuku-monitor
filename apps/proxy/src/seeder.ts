@@ -112,6 +112,8 @@ export function summarizeTelemetry(e: TelemetryEvent): string {
     if (freeMatch) summaryLines.push(`- Free RAM: ${freeMatch[1].trim()}`);
 
     return `${header}\n\nsummary:\n${summaryLines.join("\n")}\n\nraw:\n${raw}`;
+  }
+
   // 1. First-class Gemini Nano "What Was Done" parser
   if (raw.includes("ACTION:") && (raw.includes("TOPIC:") || raw.includes("ENTITIES:"))) {
     const action = raw.match(/ACTION:\s*(.+)/)?.[1]?.trim() ?? "Activity performed";
