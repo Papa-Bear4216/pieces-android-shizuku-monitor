@@ -112,6 +112,19 @@ export function summarizeTelemetry(e: TelemetryEvent): string {
     if (freeMatch) summaryLines.push(`- Free RAM: ${freeMatch[1].trim()}`);
 
     return `${header}\n\nsummary:\n${summaryLines.join("\n")}\n\nraw:\n${raw}`;
+  // 1. First-class Gemini Nano "What Was Done" parser
+  if (raw.includes("ACTION:") && (raw.includes("TOPIC:") || raw.includes("ENTITIES:"))) {
+    const action = raw.match(/ACTION:\s*(.+)/)?.[1]?.trim() ?? "Activity performed";
+    const topic = raw.match(/TOPIC:\s*(.+)/)?.[1]?.trim() ?? "General";
+    const entities = raw.match(/ENTITIES:\s*(.+)/)?.[1]?.trim() ?? "None";
+    const state = raw.match(/STATE:\s*(.+)/)?.[1]?.trim() ?? "completed";
+
+    summaryLines.push(`- Action Performed: ${action}`);
+    summaryLines.push(`- Topic / Focus: ${topic}`);
+    summaryLines.push(`- Key Entities & Data: ${entities}`);
+    summaryLines.push(`- Progress / State: ${state}`);
+
+    return `${header}\n\nsummary:\n${summaryLines.join("\n")}`;
   }
 
   // Skip screen structure parsing for noisy packages

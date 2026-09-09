@@ -300,8 +300,11 @@ const server = createServer(async (req, res) => {
           batch.length === 1
             ? summarizeTelemetry(batch[0])
             : batch.map((e) => summarizeTelemetry(e)).join("\n\n===\n\n");
-        const title =
-          batch.length === 1
+        const rawTelemetry = batch[0]?.telemetry ?? "";
+        const actionMatch = rawTelemetry.match(/ACTION:\s*(.+)/)?.[1]?.trim();
+        const title = actionMatch
+          ? `Android Activity: ${actionMatch}`
+          : batch.length === 1
             ? "Android Context: System Telemetry"
             : `Android Context: System Telemetry (${batch.length} events batched)`;
 
@@ -313,11 +316,15 @@ const server = createServer(async (req, res) => {
         await addToMem0(bodyText);
         await pipeToRegistryApp(batch, packageName, batch[0]?.app_label);
 
-        try {
-          await seedToPiecesOS(PIECES_BASE_URL, bodyText, title);
-        } catch (err) {
-          console.warn("PiecesOS not reachable for seeding; queued for retry.", err);
-          await seedQueue.enqueue(bodyText, title, "asset");
+        // Ambient workstream telemetry is routed strictly to WorkstreamEvents.
+        // Asset creation (/assets/create) is skipped for Nano action streams to avoid store bloat.
+        if (!actionMatch) {
+          try {
+            await seedToPiecesOS(PIECES_BASE_URL, bodyText, title);
+          } catch (err) {
+            console.warn("PiecesOS not reachable for seeding; queued for retry.", err);
+            await seedQueue.enqueue(bodyText, title, "asset");
+          }
         }
 
         // Also write to the workstream-event stream (feeds PiecesOS's own
