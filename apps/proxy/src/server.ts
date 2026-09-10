@@ -1,10 +1,11 @@
 import { createServer } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { Agent, setGlobalDispatcher } from "undici";
 import { PiecesClient } from "@pieces-android/pieces-api";
 import { findAllowedRoute } from "@pieces-android/allowlist";
 import { isValidBearerToken } from "./auth.ts";
-import { summarizeTelemetry, seedToPiecesOS, seedWorkstreamEvent, TelemetryEvent } from "./seeder.ts";
+import { summarizeTelemetry, androidTimelineReadable, seedToPiecesOS, seedWorkstreamEvent, TelemetryEvent } from "./seeder.ts";
 import { SeedQueue } from "./seed-queue.js";
 import { shouldSeed } from "./surprisal.js";
 import { askOllamaFallback } from "./ollama-fallback.js";
@@ -30,6 +31,12 @@ async function addToMem0(content: string) {
   }
 }
 
+// Optional (merged from shizuku-monitor): forward a coarse usage record for
+// each seeded batch to registry-app's /ingest, feeding its pattern engine.
+// Env-gated (REGISTRY_INGEST_URL unset => no-op) and always non-fatal.
+const REGISTRY_INGEST_URL = process.env.REGISTRY_INGEST_URL;
+const REGISTRY_AUTH_TOKEN = process.env.REGISTRY_AUTH_TOKEN;
+
 async function pipeToRegistryApp(batch: TelemetryEvent[], packageName: string, appLabel?: string) {
   if (!REGISTRY_INGEST_URL) return;
   try {
@@ -39,6 +46,7 @@ async function pipeToRegistryApp(batch: TelemetryEvent[], packageName: string, a
     if (batch.length > 1 && batch[0]?.timestamp && batch[batch.length - 1]?.timestamp) {
       const t0 = new Date(batch[0].timestamp).getTime();
       const t1 = new Date(batch[batch.length - 1].timestamp).getTime();
+      if (!isNaN(t0) && !isNaN(t1)) usageDurationMs = Math.max(0, Math.abs(t1 - t0));
       if (!isNaN(t0) && !isNaN(t1)) {
         usageDurationMs = Math.max(0, Math.abs(t1 - t0));
       }
@@ -50,6 +58,7 @@ async function pipeToRegistryApp(batch: TelemetryEvent[], packageName: string, a
       rawLabel: appLabel || packageName,
       rawIdentity: packageName,
       idempotencyKey,
+      payload: { usageCount: batch.length, usageDurationMs, windowHours: 1 },
       payload: {
         usageCount: batch.length,
         usageDurationMs,
@@ -69,6 +78,15 @@ async function pipeToRegistryApp(batch: TelemetryEvent[], packageName: string, a
     console.warn("Failed to pipe telemetry to registry-app:", err);
   }
 }
+
+// Observed in practice (2026-08-29): a pooled keep-alive socket to PiecesOS
+// occasionally dies without either side sending FIN/RST (UND_ERR_SOCKET
+// "other side closed" surfaced from a workstream-event seed call), and
+// undici's default keep-alive tries to reuse it anyway. A short
+// keepAliveTimeout forces a fresh socket often enough that a dead one is
+// very unlikely to still be sitting in the pool when the next request goes
+// out. See the matching fix + longer writeup in apps/pieces-gateway/src/server.ts.
+setGlobalDispatcher(new Agent({ keepAliveTimeout: 4000, keepAliveMaxTimeout: 4000 }));
 
 const UPSTREAM_TIMEOUT_MS = 5000;
 // PiecesOS's /assets does a real store scan that scales with asset count —
@@ -334,11 +352,21 @@ const server = createServer(async (req, res) => {
         // gets the same reconciliation guarantee instead of being silently
         // lost if PiecesOS happens to be down for this specific write and
         // not the asset write moments earlier.
+        //
+        // If an on-device Gemini Nano action block is present, send the clean
+        // formatted summary (bodyText) directly into the workstream timeline;
+        // otherwise fall back to the [Android · <app>] summary.
+        const timelineReadable =
+          actionMatch
+            ? bodyText
+            : batch.length === 1
+              ? androidTimelineReadable(batch[0])
+              : batch.map((e) => androidTimelineReadable(e)).join("\n\n");
         try {
-          await seedWorkstreamEvent(PIECES_BASE_URL, bodyText);
+          await seedWorkstreamEvent(PIECES_BASE_URL, timelineReadable);
         } catch (err) {
           console.warn("PiecesOS not reachable for workstream event; queued for retry.", err);
-          await seedQueue.enqueue(bodyText, "", "workstream_event");
+          await seedQueue.enqueue(timelineReadable, "", "workstream_event");
         }
       }
 
@@ -416,8 +444,12 @@ const server = createServer(async (req, res) => {
     // seconds on a non-trivial asset count — 5s was tight enough to
     // routinely time out a request PiecesOS was about to complete
     // successfully (observed: consistent ~5.3s, PiecesOS itself returning
-    // 200). Other routes stay on the tighter default.
-    const timeoutMs = route.piecesPath === "/assets" ? ASSETS_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
+    // 200). /assets/search (recent/search's target) does the same kind of
+    // real scan over the same growing asset count and was still on the
+    // tighter default until 2026-08-29's route sweep caught it — same class
+    // of bug as the gateway's flat timeout, just one layer in. Other routes
+    // stay on the tighter default.
+    const timeoutMs = route.piecesPath === "/assets" || route.piecesPath === "/assets/search" ? ASSETS_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
     const piecesRes = await fetch(target, { signal: AbortSignal.timeout(timeoutMs) });
     const text = await piecesRes.text();
     res.writeHead(piecesRes.status, {

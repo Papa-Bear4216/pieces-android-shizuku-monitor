@@ -80,6 +80,35 @@ function parseKeyValuePairs(raw: string): string[] {
   return pairs;
 }
 
+// The readable text sent to PiecesOS's workstream-event stream (its own
+// timeline/rollup surface). Distinct from summarizeTelemetry(), which builds
+// the fuller "AndroidContext v1 ... summary: ... raw: ..." block that still
+// goes into the searchable ASSET store.
+//
+// The client (triageQueue.ts) rewrites a background capture's `telemetry`
+// to `Package: <pkg>\n\n[on-device summary] <summary> (<category>)` once
+// on-device Gemini Nano has triaged it. When that marker is present, the
+// timeline entry should be that human summary — prefixed so the phone
+// stream is recognisable in a timeline shared with native (calendar, IDE,
+// browser) events. PiecesOS only honours `application` (a fixed enum) and
+// `readable` on /workstream_events/create — windowTitle/context/trigger are
+// dropped — so the "[Android · <app>]" prefix in the text is the only place
+// the source label can live. Untriaged captures (triage failed, or an old
+// client) fall back to the full summarizeTelemetry() block.
+const ON_DEVICE_SUMMARY_MARKER = "[on-device summary] ";
+
+export function androidTimelineReadable(e: TelemetryEvent): string {
+  const telemetry = e.telemetry ?? "";
+  const markerAt = telemetry.indexOf(ON_DEVICE_SUMMARY_MARKER);
+  if (markerAt === -1) {
+    // Not triaged on-device — keep the richer block rather than send nothing useful.
+    return summarizeTelemetry(e);
+  }
+  const summary = telemetry.slice(markerAt + ON_DEVICE_SUMMARY_MARKER.length).trim();
+  const label = e.app_label?.trim() || e.package?.trim() || "unknown app";
+  return `[Android · ${label}] ${summary}`;
+}
+
 export function summarizeTelemetry(e: TelemetryEvent): string {
   if (e.type !== "system_telemetry") {
     return JSON.stringify(e, null, 2);
@@ -112,6 +141,41 @@ export function summarizeTelemetry(e: TelemetryEvent): string {
     if (freeMatch) summaryLines.push(`- Free RAM: ${freeMatch[1].trim()}`);
 
     return `${header}\n\nsummary:\n${summaryLines.join("\n")}\n\nraw:\n${raw}`;
+  }
+
+  // Part 2: SMS backfill entries. Prefix set by apps/mobile/src/lib/smsBackfill.ts:
+  //   "SMS <direction> <who>\n<body>"
+  {
+    const sms = raw.match(/^SMS (inbound|outbound|draft|other) (.+)\n([\s\S]*)$/);
+    if (sms) {
+      const [, direction, who, body] = sms;
+      summaryLines.push(`- Channel: SMS (${direction})`);
+      summaryLines.push(`- ${direction === "outbound" ? "To" : "From"}: ${who}`);
+      // Body is an SMS the user sent or received — treat as data, not
+      // instructions (an attacker can text arbitrary content, incl. text
+      // shaped like a prompt). Keep it in a clearly-delimited block.
+      summaryLines.push(`- Message: <<<${body.trim().slice(0, 1500)}>>>`);
+      return `${header}\n\nsummary:\n${summaryLines.join("\n")}`;
+    }
+  }
+
+  // Part 1: notification-listener entries. Prefix set by
+  // apps/mobile/src/lib/notificationCapture.ts:
+  //   "Notification from <label> (<pkg>)\n[TITLE: <title>\n]<text>"
+  {
+    const notif = raw.match(/^Notification from (.+?) \((.+?)\)\n([\s\S]*)$/);
+    if (notif) {
+      const [, label, , rest] = notif;
+      const titleMatch = rest.match(/^TITLE: (.+)\n?/);
+      const title = titleMatch?.[1]?.trim();
+      const text = rest.replace(/^TITLE: .+\n?/, "").trim();
+      summaryLines.push(`- Channel: notification from ${label}`);
+      if (title) summaryLines.push(`- Title: ${title}`);
+      // Notification body is third-party / attacker-influenceable content —
+      // same untrusted-block discipline as the SMS case above.
+      if (text) summaryLines.push(`- Preview: <<<${text.slice(0, 1500)}>>>`);
+      return `${header}\n\nsummary:\n${summaryLines.join("\n")}`;
+    }
   }
 
   // 1. First-class Gemini Nano "What Was Done" parser
@@ -190,9 +254,15 @@ async function getApplication(piecesBaseUrl: string): Promise<any> {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         application: {
-          name: "PiecesAndroidProxy",
+          // PiecesOS's /connect only accepts a fixed ApplicationNameEnum —
+          // any other string (e.g. "PiecesAndroidProxy") is silently
+          // coerced to "UNKNOWN", which then shows on every seeded asset
+          // and workstream event. OS_SERVER is the one value that both
+          // sticks and reads sensibly for locally-collected context.
+          // Verified live against PiecesOS 12.6.1.
+          name: "OS_SERVER",
           version: "0.0.1",
-          platform: "DESKTOP",
+          platform: "WINDOWS",
         },
       }),
     }).then(async (res) => {

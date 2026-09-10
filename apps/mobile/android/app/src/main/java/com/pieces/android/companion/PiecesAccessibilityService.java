@@ -148,6 +148,14 @@ public class PiecesAccessibilityService extends AccessibilityService {
         return prefs.getBoolean(AccessibilityPlugin.PASSIVE_MODE_KEY, false);
     }
 
+    // Small cache so the label-based exclusion check (see isExcluded's comment
+    // on why label matters, not just package id) doesn't do a fresh
+    // PackageManager lookup on every single accessibility event — app
+    // identity/label doesn't change at runtime, so caching by package name is
+    // safe. Unbounded growth isn't a real concern: bounded by how many
+    // distinct packages actually fire accessibility events on the device.
+    private final java.util.Map<String, String> labelCache = new java.util.HashMap<>();
+
     // Only capture from packages the user explicitly selected via the app picker
     // (AccessibilityPlugin.setAllowlist) — this service is system-wide by platform
     // design (any app can fire a window event), so this check is the only thing
@@ -157,8 +165,19 @@ public class PiecesAccessibilityService extends AccessibilityService {
         if (packageName.isEmpty()) return false;
         // Hard denylist enforced independently of the user's saved allowlist —
         // see AccessibilityPlugin.isExcluded's comment for why this can't just
-        // rely on the picker having filtered these out already.
-        if (AccessibilityPlugin.isExcluded(packageName)) return false;
+        // rely on the picker/setAllowlist having filtered these out already.
+        // Label included here (not just package id) so this stays the actual
+        // last line of defense rather than repeating the same prefix-only gap
+        // that let com.wf.wellsfargomobile through at save time.
+        String label = labelCache.get(packageName);
+        if (label == null && !labelCache.containsKey(packageName)) {
+            try {
+                android.content.pm.PackageManager pm = getPackageManager();
+                label = pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString();
+            } catch (android.content.pm.PackageManager.NameNotFoundException ignored) {}
+            labelCache.put(packageName, label);
+        }
+        if (AccessibilityPlugin.isExcluded(packageName, label)) return false;
         SharedPreferences prefs = getSharedPreferences(AccessibilityPlugin.PREFS_NAME, MODE_PRIVATE);
         Set<String> allowlist = prefs.getStringSet(AccessibilityPlugin.ALLOWLIST_KEY, new HashSet<>());
         return allowlist.contains(packageName);

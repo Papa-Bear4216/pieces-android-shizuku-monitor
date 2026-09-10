@@ -9,11 +9,26 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    androidResources {
+        // MediaPipe's AssetManager-backed setModelAssetPath needs the .tflite
+        // stored uncompressed in the APK.
+        noCompress 'tflite'
+    }
+    packaging {
+        jniLibs {
+            // Package native .so files uncompressed and page-aligned so the
+            // APK passes Android 15's 16 KB ELF alignment check.
+            useLegacyPackaging = false
         }
     }
     buildTypes {
@@ -42,6 +57,14 @@ dependencies {
     implementation project(':capacitor-cordova-android-plugins')
     implementation 'dev.rikka.shizuku:api:12.1.0'
     implementation 'dev.rikka.shizuku:provider:12.1.0'
+    // On-device Gemini Nano (AICore) for triaging captured screen text before
+    // it's sent to PiecesOS — same dependency confirmed working in
+    // bear-house-classic's OnDeviceGenAIPlugin.java.
+    implementation 'com.google.mlkit:genai-prompt:1.0.0-beta1'
+    // MediaPipe Text Embedder for local semantic search — bundled tflite,
+    // L2-normalized 100-dim embeddings, fully offline. Not GenAI, so not
+    // subject to AICore's foreground-app inference restriction.
+    implementation 'com.google.mediapipe:tasks-text:0.10.35'
 }
 
 apply from: 'capacitor.build.gradle'

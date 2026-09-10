@@ -1,5 +1,8 @@
 ext {
-    minSdkVersion = 24
+    // 26 (Android 8.0), not 24 — required by com.google.mlkit:genai-prompt
+    // (see app/build.gradle). Gemini Nano/AICore itself only runs on
+    // flagship-class hardware anyway, so this floor isn't losing real reach.
+    minSdkVersion = 26
     compileSdkVersion = 36
     targetSdkVersion = 36
     androidxActivityVersion = '1.11.0'

@@ -1,0 +1,4 @@
+# Copy this file to local-config.ps1 (gitignored) and fill in your own
+# values. show-proxy-info.ps1 dot-sources local-config.ps1 if it exists.
+
+$PiecesGatewayUrl = "https://your-gateway-hostname.example.com"

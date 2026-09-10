@@ -135,3 +135,31 @@ simulation. Every item below was actually executed.
   Recent against `https://pieces.example.com` from an actual off-LAN network
   (e.g. phone on cellular data, not Wi-Fi). Everything above was curl-verified, not
   phone-verified.
+
+## Local Semantic Search (/search)
+
+Prerequisites: a debug build installed on a device where on-device triage already works
+(Gemini Nano available), screen context enabled.
+
+1. **Local capture is indexed and searchable.**
+   - Open an allowed app (e.g. a shopping app), let a passive capture happen.
+   - Reopen the companion app (this runs `triageQueue()`, which triages then indexes).
+   - Go to the Search tab, search a word related to what was on screen.
+   - Expect: a result card with the **"On this device"** badge and the triaged summary text.
+
+2. **Offline still returns device results.**
+   - Enable airplane mode.
+   - Search again for the same term.
+   - Expect: the device hit still appears; a **"Home PC offline — showing device results only."** banner is shown.
+
+3. **Server summaries are covered when the home node is reachable.**
+   - Disable airplane mode, confirm Status shows the home PC online.
+   - Search a term matching a known "What Got Done" summary.
+   - Expect: a result card with the **"From home PC"** badge.
+
+4. **APK size / launch.**
+   - The debug APK is ~39.7 MB (measured: 39,654,449 bytes; was ~37.0 MB / 36,983,425 bytes before bumping `com.google.mediapipe:tasks-text` from 0.10.14 to 0.10.35 for 16 KB ELF page alignment), down from ~58.7 MB (58,716,445 bytes) before the arm64-only `abiFilters`. The bundled `universal_sentence_encoder.tflite` accounts for ~6 MB of that; the MediaPipe `tasks-text` native libraries (TFLite runtime + sentencepiece/regex `.so`) account for most of the rest. `ndk { abiFilters 'arm64-v8a' }` is now applied in `app/build.gradle`, so those `.so` libs ship for arm64 only rather than all four ABIs — that is where the ~29.6 MB saving comes from. If the install base includes 32-bit devices, `armeabi-v7a` would need adding back.
+   - Confirm the app launches without an ANR (model loads off the main thread in `TextEmbedderPlugin.load()` — inference is on a single-thread executor).
+
+5. **Model-unavailable fallback (optional, emulator without the model).**
+   - On a build/device where the embedder can't initialize, `/search` still returns substring matches and shows "Meaning-based search isn't available on this device — showing text matches."

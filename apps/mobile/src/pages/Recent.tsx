@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   getWorkstreamSummaries,
+  getCachedWorkstreamSummaries,
   ProxyNotConfiguredError,
   HomeNodeUnreachableError,
   type WorkstreamSummary,
@@ -13,7 +14,7 @@ type State =
   | { kind: "loading" }
   | { kind: "loaded"; summaries: WorkstreamSummary[] }
   | { kind: "not-configured" }
-  | { kind: "home-offline"; message: string }
+  | { kind: "home-offline"; message: string; stale?: { summaries: WorkstreamSummary[]; at: string } }
   | { kind: "error"; message: string };
 
 export default function Recent() {
@@ -30,7 +31,12 @@ export default function Recent() {
       if (err instanceof ProxyNotConfiguredError) {
         setState({ kind: "not-configured" });
       } else if (err instanceof HomeNodeUnreachableError) {
-        setState({ kind: "home-offline", message: err.message });
+        const cached = await getCachedWorkstreamSummaries();
+        setState({
+          kind: "home-offline",
+          message: err.message,
+          stale: cached ? { summaries: cached.value, at: cached.at } : undefined,
+        });
       } else {
         setState({ kind: "error", message: err instanceof Error ? err.message : String(err) });
       }
@@ -61,6 +67,24 @@ export default function Recent() {
         <>
           <p className="status-error">Home PC is offline or unreachable. {state.message}</p>
           <button onClick={load}>Retry</button>
+
+          {state.stale && (
+            <>
+              <p className="hint setup-note">
+                Showing the last synced copy from {new Date(state.stale.at).toLocaleString()}:
+              </p>
+              <ul>
+                {state.stale.summaries.map((s) => (
+                  <li key={s.id} className="card faded">
+                    <div className="card-row">
+                      <span className="card-title">{s.name}</span>
+                      <span className="card-meta">{s.created}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </>
       )}
 
@@ -73,23 +97,18 @@ export default function Recent() {
 
       {state.kind === "loaded" && (
         <>
-          <button onClick={load} style={{ marginBottom: 12 }}>
+          <button className="secondary" onClick={load} style={{ marginBottom: 12 }}>
             Refresh
           </button>
-          {state.summaries.length === 0 && <p>No workflow summaries yet.</p>}
+          {state.summaries.length === 0 && <p className="hint">No workflow summaries yet.</p>}
           <ul>
             {state.summaries.map((s) => (
-              <li key={s.id} style={{ marginBottom: 12, border: "1px solid #444", padding: 12, borderRadius: 8 }}>
-                <div
-                  onClick={() => setExpanded(expanded === s.id ? null : s.id)}
-                  style={{ cursor: "pointer", display: "flex", justifyContent: "space-between" }}
-                >
-                  <strong>{s.name}</strong>
-                  <span style={{ color: "#888", fontSize: 12 }}>{s.created}</span>
+              <li key={s.id} className="card clickable" onClick={() => setExpanded(expanded === s.id ? null : s.id)}>
+                <div className="card-row">
+                  <span className="card-title">{s.name}</span>
+                  <span className="card-meta">{s.created}</span>
                 </div>
-                {expanded === s.id && (
-                  <div style={{ marginTop: 8, whiteSpace: "pre-wrap", fontSize: 14, color: "#ccc" }}>{s.text}</div>
-                )}
+                {expanded === s.id && <div className="card-body">{s.text}</div>}
               </li>
             ))}
           </ul>
@@ -100,6 +119,7 @@ export default function Recent() {
         <button onClick={() => navigate("/setup")}>Setup</button>
         <button onClick={() => navigate("/status")}>Status</button>
         <button onClick={() => navigate("/ask")}>Ask</button>
+        <button onClick={() => navigate("/search")}>Search</button>
       </nav>
     </div>
   );
