@@ -64,6 +64,12 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
         throw new HomeNodeUnreachableError(body?.reason ?? body?.error);
       }
 
+      // If target returned auth failure (401/403) or server error (>= 500) and another target exists, fail over
+      if (i < targets.length - 1 && (res.status === 401 || res.status === 403 || res.status >= 500)) {
+        lastError = new Error(`Target ${target.baseUrl} failed with status ${res.status}`);
+        continue;
+      }
+
       return res;
     } catch (err) {
       lastError = err;
