@@ -13,8 +13,10 @@ apps/mobile/android/local.properties
 # never commit a real bearer token or JWT
 .env
 .env.local
-.bearer-token
-.gateway-token
+.bearer-token*
+**/.bearer-token*
+.gateway-token*
+**/.gateway-token*
 .aider*
 
 # per-machine settings (real hostnames, etc.) - see local-config.ps1.example

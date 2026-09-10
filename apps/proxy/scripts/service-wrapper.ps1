@@ -44,6 +44,27 @@ Set-Location $ProxyDir
 # reasonably fast.
 $backoffSeconds = 2
 while ($true) {
+    # Clear any stale listener on 8787 before (re)launching. A crashed npx/tsx
+    # can leave a node child that still holds the port but never serves - the
+    # server's own uncaughtException handler swallows the resulting EADDRINUSE
+    # and the new process sits alive-but-not-listening forever (a zombie that
+    # only a manual kill clears). Reaping it here makes the restart loop
+    # actually self-heal instead of wedging on the first port collision.
+    try {
+        $stale = @(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+    } catch {
+        $stale = @()
+    }
+    if ($stale.Count -gt 0) {
+        foreach ($stalePid in ($stale.OwningProcess | Select-Object -Unique)) {
+            if ($stalePid -and $stalePid -ne $PID) {
+                "=== $(Get-Date -Format o) killing stale :8787 listener PID $stalePid ===" | Out-File -FilePath $LogFile -Append
+                Stop-Process -Id $stalePid -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Start-Sleep -Seconds 1
+    }
+
     "=== $(Get-Date -Format o) launching npx tsx ===" | Out-File -FilePath $LogFile -Append
     $start = Get-Date
     try {
