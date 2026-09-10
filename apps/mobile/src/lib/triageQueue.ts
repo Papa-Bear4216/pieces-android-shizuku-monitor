@@ -1,4 +1,4 @@
-import { peekQueue, replaceQueue, type UsageEvent } from "./usage";
+import { peekQueue, patchTriagedEvents, type UsageEvent } from "./usage";
 import { flushUsageEvents } from "./flush";
 import { tryOnDeviceTriage } from "./onDeviceTriage";
 import { embed } from "./textEmbedder";
@@ -17,7 +17,7 @@ import { appendEntry } from "./captureIndex";
 // which is the right tradeoff over dropping summaries under load.
 export async function triageQueue(): Promise<void> {
   const queue = await peekQueue();
-  let changed = false;
+  const updated: UsageEvent[] = [];
 
   for (let i = 0; i < queue.length; i++) {
     const event = queue[i];
@@ -31,7 +31,7 @@ export async function triageQueue(): Promise<void> {
         telemetry: `Package: ${event.package ?? ""}\n\n[on-device summary] ${triaged.summary} (${triaged.category})`,
         triaged: true,
       };
-      queue[i] = rewritten;
+      updated.push(rewritten);
 
       // Also persist the summary to the searchable capture index (survives
       // the flush-and-delete cycle below). Embedding failure is non-fatal —
@@ -48,13 +48,12 @@ export async function triageQueue(): Promise<void> {
         });
       }
     } else {
-      queue[i] = { ...event, triaged: false };
+      updated.push({ ...event, triaged: false });
     }
-    changed = true;
   }
 
-  if (changed) {
-    await replaceQueue(queue);
+  if (updated.length > 0) {
+    await patchTriagedEvents(updated);
   }
 
   // flushUsageEvents() itself now stops at the first untriaged background

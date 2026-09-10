@@ -15,7 +15,13 @@ import { peekQueue, clearSentEvents } from "./usage";
 // actually triages) still calls this too, after rewriting entries — by then
 // there's no untriaged prefix left to stop at, so it flushes everything
 // that's ready.
+
+let isFlushing = false;
+
 export async function flushUsageEvents(): Promise<void> {
+  if (isFlushing) return;
+  isFlushing = true;
+
   try {
     const events = await peekQueue();
     if (events.length === 0) return;
@@ -44,10 +50,12 @@ export async function flushUsageEvents(): Promise<void> {
     });
 
     if (res.ok) {
-      await clearSentEvents(toSend.length);
+      await clearSentEvents(toSend);
     }
     // Any non-2xx (including 503 home-offline) leaves the queue intact for the next flush attempt.
   } catch {
     // Network error, offline, whatever — silently retry on the next flush call.
+  } finally {
+    isFlushing = false;
   }
 }
