@@ -7,8 +7,10 @@ import Recent from "./pages/Recent";
 import Search from "./pages/Search";
 import { flushUsageEvents } from "./lib/flush";
 import { triageQueue } from "./lib/triageQueue";
-import { isShizukuToolkitEnabled, isScreenContextEnabled } from "./lib/config";
+import { isShizukuToolkitEnabled, isScreenContextEnabled, isNotificationCaptureEnabled } from "./lib/config";
 import { startPassiveCaptureListener } from "./lib/passiveCapture";
+import { startNotificationCaptureListener } from "./lib/notificationCapture";
+import { runSmsBackfill } from "./lib/smsBackfill";
 import { registerPlugin, Capacitor } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
 
@@ -76,6 +78,24 @@ export default function App() {
         });
       }
     });
+
+    // Part 1: notification capture. Independent of screen-context — a user can
+    // want the notification firehose without the accessibility screen scraper.
+    // The native service also fail-closes on its own pref, so registering here
+    // when the flag is off would only wire a listener that never fires.
+    isNotificationCaptureEnabled().then((enabled) => {
+      if (enabled && Capacitor.isNativePlatform()) {
+        startNotificationCaptureListener();
+      }
+    });
+
+    // Part 2: SMS backfill. One-shot on foreground — catches texts that arrived
+    // while the app was closed / phone was off. No-op if READ_SMS isn't granted
+    // or the high-water mark is already caught up. Bounded per run (see
+    // smsBackfill.ts MAX_PER_RUN); a huge first history resumes across runs.
+    if (Capacitor.isNativePlatform()) {
+      runSmsBackfill().catch(() => {});
+    }
 
     // Backstop flush for events queued during a long session on one screen
     // (e.g. repeated searches without navigating away) — per-screen mount

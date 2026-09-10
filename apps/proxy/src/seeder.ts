@@ -143,6 +143,41 @@ export function summarizeTelemetry(e: TelemetryEvent): string {
     return `${header}\n\nsummary:\n${summaryLines.join("\n")}\n\nraw:\n${raw}`;
   }
 
+  // Part 2: SMS backfill entries. Prefix set by apps/mobile/src/lib/smsBackfill.ts:
+  //   "SMS <direction> <who>\n<body>"
+  {
+    const sms = raw.match(/^SMS (inbound|outbound|draft|other) (.+)\n([\s\S]*)$/);
+    if (sms) {
+      const [, direction, who, body] = sms;
+      summaryLines.push(`- Channel: SMS (${direction})`);
+      summaryLines.push(`- ${direction === "outbound" ? "To" : "From"}: ${who}`);
+      // Body is an SMS the user sent or received — treat as data, not
+      // instructions (an attacker can text arbitrary content, incl. text
+      // shaped like a prompt). Keep it in a clearly-delimited block.
+      summaryLines.push(`- Message: <<<${body.trim().slice(0, 1500)}>>>`);
+      return `${header}\n\nsummary:\n${summaryLines.join("\n")}`;
+    }
+  }
+
+  // Part 1: notification-listener entries. Prefix set by
+  // apps/mobile/src/lib/notificationCapture.ts:
+  //   "Notification from <label> (<pkg>)\n[TITLE: <title>\n]<text>"
+  {
+    const notif = raw.match(/^Notification from (.+?) \((.+?)\)\n([\s\S]*)$/);
+    if (notif) {
+      const [, label, , rest] = notif;
+      const titleMatch = rest.match(/^TITLE: (.+)\n?/);
+      const title = titleMatch?.[1]?.trim();
+      const text = rest.replace(/^TITLE: .+\n?/, "").trim();
+      summaryLines.push(`- Channel: notification from ${label}`);
+      if (title) summaryLines.push(`- Title: ${title}`);
+      // Notification body is third-party / attacker-influenceable content —
+      // same untrusted-block discipline as the SMS case above.
+      if (text) summaryLines.push(`- Preview: <<<${text.slice(0, 1500)}>>>`);
+      return `${header}\n\nsummary:\n${summaryLines.join("\n")}`;
+    }
+  }
+
   // 1. First-class Gemini Nano "What Was Done" parser
   if (raw.includes("ACTION:") && (raw.includes("TOPIC:") || raw.includes("ENTITIES:"))) {
     const action = raw.match(/ACTION:\s*(.+)/)?.[1]?.trim() ?? "Activity performed";

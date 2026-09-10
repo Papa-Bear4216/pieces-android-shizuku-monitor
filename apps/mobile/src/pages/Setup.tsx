@@ -7,6 +7,7 @@ const ShizukuMonitor = registerPlugin<any>('ShizukuMonitor');
 const AccessibilityScanner = registerPlugin<any>('AccessibilityScanner');
 import {
   getProxyBaseUrl, getProxyToken, setProxyBaseUrl, setProxyToken,
+  getRemoteGatewayUrl, getRemoteGatewayToken, setRemoteGatewayUrl, setRemoteGatewayToken,
   isShizukuToolkitEnabled, setShizukuToolkitEnabled,
   isScreenContextEnabled, setScreenContextEnabled,
 } from "../lib/config";
@@ -15,11 +16,24 @@ import { recordEvent, classifyMode } from "../lib/usage";
 import { flushUsageEvents } from "../lib/flush";
 import { parseConnectionQrPayload } from "../lib/connectionQr";
 import { decodeJwtForDisplay, formatExpiry } from "../lib/jwtDisplay";
+import {
+  isNotificationListenerGranted, getNotificationCaptureConfig, setNotificationCapture,
+  grantNotificationListenerViaShizuku, openNotificationListenerSettings,
+  startNotificationCaptureListener,
+} from "../lib/notificationCapture";
+import {
+  smsPermissions, grantSmsViaShizuku, runSmsBackfill,
+  listSmsContacts, getSmsAllowlist, setSmsAllowlist, type SmsContact,
+} from "../lib/smsBackfill";
 
 export default function Setup() {
   const navigate = useNavigate();
+  // Plan A (LAN)
   const [baseUrl, setBaseUrl] = useState("");
   const [token, setToken] = useState("");
+  // Plan B (remote gateway) — optional; auto-failover target
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [remoteToken, setRemoteToken] = useState("");
   const [checking, setChecking] = useState(false);
   // "ok" = full end-to-end chain verified (proxy/gateway -> PiecesOS).
   // "server-only" = the proxy/gateway process answers but PiecesOS itself
@@ -34,20 +48,160 @@ export default function Setup() {
   const [screenContext, setScreenContext] = useState(false);
   const [accessibilityGranted, setAccessibilityGranted] = useState(false);
 
+  // Part 1: notification capture
+  const [notifCapture, setNotifCapture] = useState(false);
+  const [notifAllApps, setNotifAllApps] = useState(false);
+  const [notifListenerGranted, setNotifListenerGranted] = useState(false);
+  const [notifBusy, setNotifBusy] = useState(false);
+  const [notifError, setNotifError] = useState<string | null>(null);
+
+  // Part 2: SMS backfill (contact-allowlist model)
+  const [smsGranted, setSmsGranted] = useState(false);
+  const [contactsGranted, setContactsGranted] = useState(false);
+  const [smsBusy, setSmsBusy] = useState(false);
+  const [smsError, setSmsError] = useState<string | null>(null);
+  const [smsResult, setSmsResult] = useState<string | null>(null);
+  const [contacts, setContacts] = useState<SmsContact[]>([]);
+  const [contactFilter, setContactFilter] = useState("");
+  const [smsAllow, setSmsAllow] = useState<Set<string>>(new Set());
+  const [pickerOpen, setPickerOpen] = useState(false);
+
   useEffect(() => {
     (async () => {
-      const [savedUrl, savedToken, toolkitEnabled, contextEnabled] = await Promise.all([
-        getProxyBaseUrl(), getProxyToken(), isShizukuToolkitEnabled(), isScreenContextEnabled(),
-      ]);
+      const [savedUrl, savedToken, savedRemoteUrl, savedRemoteToken, toolkitEnabled, contextEnabled] =
+        await Promise.all([
+          getProxyBaseUrl(), getProxyToken(),
+          getRemoteGatewayUrl(), getRemoteGatewayToken(),
+          isShizukuToolkitEnabled(), isScreenContextEnabled(),
+        ]);
       if (savedUrl) setBaseUrl(savedUrl);
       if (savedToken) setToken(savedToken);
+      if (savedRemoteUrl) setRemoteUrl(savedRemoteUrl);
+      if (savedRemoteToken) setRemoteToken(savedRemoteToken);
       setShizukuToolkit(toolkitEnabled);
       setScreenContext(contextEnabled);
     })();
     AccessibilityScanner.isAccessibilityServiceEnabled().then((r: any) => setAccessibilityGranted(r.enabled));
+    refreshNotifState();
+    refreshSmsState();
     recordEvent({ type: "screen_view", screen: "setup", timestamp: new Date().toISOString() });
     flushUsageEvents();
   }, []);
+
+  async function refreshSmsState() {
+    const perms = await smsPermissions();
+    setSmsGranted(perms.sms);
+    setContactsGranted(perms.contacts);
+    if (perms.sms) {
+      try {
+        setSmsAllow(new Set(await getSmsAllowlist()));
+      } catch { /* not granted yet */ }
+    }
+  }
+
+  async function refreshNotifState() {
+    const [granted, cfg] = await Promise.all([
+      isNotificationListenerGranted(),
+      getNotificationCaptureConfig(),
+    ]);
+    setNotifListenerGranted(granted);
+    setNotifCapture(cfg.enabled);
+    setNotifAllApps(cfg.allApps);
+  }
+
+  async function handleToggleNotifCapture(next: boolean) {
+    setNotifCapture(next);
+    await setNotificationCapture(next, notifAllApps);
+    if (next) startNotificationCaptureListener();
+  }
+
+  async function handleToggleNotifAllApps(next: boolean) {
+    setNotifAllApps(next);
+    await setNotificationCapture(notifCapture, next);
+  }
+
+  async function handleGrantNotifListener() {
+    setNotifBusy(true);
+    setNotifError(null);
+    try {
+      await grantNotificationListenerViaShizuku();
+      await refreshNotifState();
+    } catch (e) {
+      setNotifError(e instanceof Error ? e.message : String(e));
+    }
+    setNotifBusy(false);
+  }
+
+  async function handleGrantSms() {
+    setSmsBusy(true);
+    setSmsError(null);
+    try {
+      const { sms, contacts: c } = await grantSmsViaShizuku();
+      setSmsGranted(sms);
+      setContactsGranted(c);
+      await refreshSmsState();
+    } catch (e) {
+      setSmsError(e instanceof Error ? e.message : String(e));
+    }
+    setSmsBusy(false);
+  }
+
+  async function handleOpenPicker() {
+    setSmsError(null);
+    setPickerOpen(true);
+    if (contacts.length === 0) {
+      try {
+        setContacts(await listSmsContacts());
+      } catch (e) {
+        setSmsError(e instanceof Error ? e.message : String(e));
+        setPickerOpen(false);
+      }
+    }
+  }
+
+  function toggleContactNumbers(numbers: string[]) {
+    setSmsAllow((prev) => {
+      const next = new Set(prev);
+      const allOn = numbers.every((n) => next.has(n));
+      for (const n of numbers) {
+        if (allOn) next.delete(n);
+        else next.add(n);
+      }
+      return next;
+    });
+  }
+
+  async function handleSaveAllowlist() {
+    setSmsBusy(true);
+    setSmsError(null);
+    try {
+      const count = await setSmsAllowlist([...smsAllow]);
+      setSmsResult(`Allowlist saved — ${count} number${count === 1 ? "" : "s"}.`);
+      setPickerOpen(false);
+    } catch (e) {
+      setSmsError(e instanceof Error ? e.message : String(e));
+    }
+    setSmsBusy(false);
+  }
+
+  async function handleSmsBackfill() {
+    setSmsBusy(true);
+    setSmsError(null);
+    setSmsResult(null);
+    try {
+      const { ingested, done } = await runSmsBackfill((p) =>
+        setSmsResult(`${p.ingested} messages queued${p.done ? "" : "…"}`)
+      );
+      setSmsResult(
+        done
+          ? `Done — ${ingested} messages from allowlisted contacts queued for PiecesOS.`
+          : `${ingested} queued so far — run again to continue (large history is paced across runs).`
+      );
+    } catch (e) {
+      setSmsError(e instanceof Error ? e.message : String(e));
+    }
+    setSmsBusy(false);
+  }
 
   async function handleToggleScreenContext(next: boolean) {
     setScreenContext(next);
@@ -160,14 +314,32 @@ export default function Setup() {
   async function handleTestAndSave() {
     setChecking(true);
     setResult("idle");
-    const reachable = await checkProxyHealth(baseUrl);
+
+    // At least one profile must be fully filled. Prefer to verify Plan A if
+    // it's set; otherwise verify Plan B.
+    const planA = baseUrl.trim() && token.trim();
+    const planB = remoteUrl.trim() && remoteToken.trim();
+    if (!planA && !planB) {
+      setChecking(false);
+      setResult("unreachable");
+      return;
+    }
+
+    const verifyUrl = planA ? baseUrl : remoteUrl;
+    const reachable = await checkProxyHealth(verifyUrl);
     if (!reachable) {
       setChecking(false);
       setResult("unreachable");
       return;
     }
-    await setProxyBaseUrl(baseUrl);
-    await setProxyToken(token);
+
+    // Save whichever profiles are complete; clear the ones that aren't so a
+    // half-filled profile can't shadow a working one in the failover list.
+    await setProxyBaseUrl(planA ? baseUrl.trim() : "");
+    await setProxyToken(planA ? token.trim() : "");
+    await setRemoteGatewayUrl(planB ? remoteUrl.trim() : "");
+    await setRemoteGatewayToken(planB ? remoteToken.trim() : "");
+
     setResult(await deepCheckAfterSave());
     setChecking(false);
 
@@ -188,7 +360,7 @@ export default function Setup() {
     await recordEvent({
       type: "setup_saved",
       screen: "setup",
-      mode: classifyMode(baseUrl),
+      mode: classifyMode(planA ? baseUrl : remoteUrl),
       timestamp: new Date().toISOString(),
     });
     flushUsageEvents();
@@ -198,59 +370,72 @@ export default function Setup() {
     <div className="page">
       <h1>Setup</h1>
       <p className="hint">
-        Two ways to connect — same fields either way, just a different address and token:
-      </p>
-      <p className="hint">
-        <strong>On your home Wi-Fi:</strong> the LAN proxy address (e.g. http://192.168.1.20:8787) and
-        the bearer token generated on that PC.
-      </p>
-      <p className="hint">
-        <strong>Away from home:</strong> your gateway's public URL (e.g. https://pieces.yourdomain.com)
-        and a device token from the gateway's enroll command. This path fails closed — if the home PC
-        is offline or unreachable, requests return an explicit error rather than hanging.
+        Fill in <strong>Plan A</strong> for home Wi-Fi, <strong>Plan B</strong> for away, or both —
+        the app tries Plan A first and falls over to Plan B automatically (on timeout, a refused
+        connection, a stale token, or a server error). Either one alone is a valid setup.
       </p>
 
       <button onClick={handleScanToConnect} disabled={checking}>
         Scan to Connect
       </button>
       <p className="hint setup-note">
-        Fastest option: scan a connection code shown by the server (e.g. a companion
-        setup script running on your PC). Fills in both fields below and saves
-        automatically — no typing or copy-paste needed.
+        Fastest option for Plan A: scan a connection code shown by the LAN proxy's companion
+        setup script. Fills in Plan A and saves automatically.
       </p>
       {scanError && <p className="status-error">{scanError}</p>}
 
-      <label>
-        Server address
-        <input
-          type="text"
-          placeholder="http://192.168.1.20:8787 or https://pieces.yourdomain.com"
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-        />
-      </label>
+      <fieldset style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: 12, marginTop: 8 }}>
+        <legend><strong>Plan A — home Wi-Fi (LAN proxy)</strong></legend>
+        <label>
+          LAN proxy address
+          <input
+            type="text"
+            placeholder="http://192.168.1.20:8787"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+          />
+        </label>
+        <label>
+          Bearer token (from that PC)
+          <input type="password" placeholder="proxy bearer token" value={token}
+            onChange={(e) => setToken(e.target.value)} />
+        </label>
+      </fieldset>
 
-      <label>
-        Token
-        <input type="password" placeholder="token" value={token} onChange={(e) => setToken(e.target.value)} />
-      </label>
-      {(() => {
-        // Only the gateway/remote token is a JWT (365-day expiry, see
-        // apps/pieces-gateway/src/jwt.ts) - the LAN proxy's bearer token is
-        // opaque random bytes with no expiry concept, so decodeJwtForDisplay
-        // correctly returns null for it and nothing renders here for that case.
-        const info = token ? decodeJwtForDisplay(token) : null;
-        if (!info?.expiresAt) return null;
-        const expired = info.expiresAt.getTime() < Date.now();
-        return (
-          <p className={`setup-note ${expired ? "status-error" : "hint"}`}>
-            Remote token {formatExpiry(info.expiresAt)}
-            {expired && " — scan a fresh connection code, or re-enroll this device."}
-          </p>
-        );
-      })()}
+      <fieldset style={{ border: "1px solid var(--border, #333)", borderRadius: 8, padding: 12, marginTop: 8 }}>
+        <legend><strong>Plan B — away (remote gateway)</strong></legend>
+        <label>
+          Gateway URL
+          <input
+            type="text"
+            placeholder="https://pieces.yourdomain.com"
+            value={remoteUrl}
+            onChange={(e) => setRemoteUrl(e.target.value)}
+          />
+        </label>
+        <label>
+          Device token (from the gateway's enroll command)
+          <input type="password" placeholder="device JWT" value={remoteToken}
+            onChange={(e) => setRemoteToken(e.target.value)} />
+        </label>
+        {(() => {
+          // Gateway tokens are JWTs (365-day expiry, apps/pieces-gateway/src/jwt.ts).
+          const info = remoteToken ? decodeJwtForDisplay(remoteToken) : null;
+          if (!info?.expiresAt) return null;
+          const expired = info.expiresAt.getTime() < Date.now();
+          return (
+            <p className={`setup-note ${expired ? "status-error" : "hint"}`}>
+              Device token {formatExpiry(info.expiresAt)}
+              {expired && " — re-enroll this device on the gateway."}
+            </p>
+          );
+        })()}
+      </fieldset>
 
-      <button onClick={handleTestAndSave} disabled={checking || !baseUrl || !token}>
+      <button
+        onClick={handleTestAndSave}
+        disabled={checking || (!(baseUrl && token) && !(remoteUrl && remoteToken))}
+      >
         {checking ? "Checking…" : "Test & Save"}
       </button>
 
@@ -317,6 +502,150 @@ export default function Setup() {
           toolkit or the auto-re-enable convenience. Requires the Shizuku app installed and
           its daemon running.
         </p>
+      </div>
+
+      <div className="panel">
+        <label className="toggle-row">
+          <input
+            type="checkbox"
+            checked={notifCapture}
+            onChange={(e) => handleToggleNotifCapture(e.target.checked)}
+          />
+          <strong>Capture notifications</strong>
+        </label>
+        <p className="hint" style={{ margin: 0 }}>
+          Off by default. Streams every app's notification previews (texts, chat, email,
+          Slack…) to PiecesOS as they arrive — one live feed across all apps. Preview text
+          only; full message bodies for SMS come from the SMS History section below.
+          Banking / 2FA / password apps are always excluded.
+        </p>
+        {notifCapture && (
+          <div style={{ marginTop: 8 }}>
+            {notifListenerGranted ? (
+              <p className="status-ok" style={{ margin: "0 0 8px 0" }}>
+                Notification access granted.
+              </p>
+            ) : (
+              <>
+                <p className="status-error" style={{ margin: "0 0 8px 0" }}>
+                  Notification access not granted yet.
+                </p>
+                <button onClick={handleGrantNotifListener} disabled={notifBusy}>
+                  {notifBusy ? "Granting…" : "Grant via Shizuku"}
+                </button>
+                <button
+                  onClick={() => openNotificationListenerSettings()}
+                  style={{ marginLeft: 8 }}
+                >
+                  Open Settings
+                </button>
+              </>
+            )}
+            {notifError && <p className="status-error" style={{ margin: "8px 0 0 0" }}>{notifError}</p>}
+            <label className="toggle-row" style={{ marginTop: 8 }}>
+              <input
+                type="checkbox"
+                checked={notifAllApps}
+                onChange={(e) => handleToggleNotifAllApps(e.target.checked)}
+              />
+              <span>Capture from <strong>all</strong> apps (not just the picked ones)</span>
+            </label>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="toggle-row">
+          <strong>SMS history</strong>
+        </div>
+        <p className="hint" style={{ margin: 0 }}>
+          Full text bodies + a backfill of existing SMS/MMS, but only from the contacts you
+          pick below. Everything else — OTP shortcodes, spam, unknown numbers — is left out.
+        </p>
+        <div style={{ marginTop: 8 }}>
+          {!smsGranted ? (
+            <>
+              <p className="status-error" style={{ margin: "0 0 8px 0" }}>
+                SMS access not granted yet.
+              </p>
+              <button onClick={handleGrantSms} disabled={smsBusy}>
+                {smsBusy ? "Granting…" : "Grant via Shizuku"}
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="status-ok" style={{ margin: "0 0 8px 0" }}>
+                SMS access granted{contactsGranted ? " · contacts readable" : ""}.
+              </p>
+              <p className="hint" style={{ margin: "0 0 8px 0" }}>
+                Allowlist: <strong>{smsAllow.size}</strong> number{smsAllow.size === 1 ? "" : "s"} selected.
+              </p>
+              {!contactsGranted && (
+                <p className="status-error" style={{ margin: "0 0 8px 0" }}>
+                  Contacts not readable — tap "Grant via Shizuku" again to add READ_CONTACTS.
+                </p>
+              )}
+              <button onClick={handleOpenPicker} disabled={smsBusy || !contactsGranted}>
+                Choose contacts
+              </button>
+              <button
+                onClick={handleSmsBackfill}
+                disabled={smsBusy || smsAllow.size === 0}
+                style={{ marginLeft: 8 }}
+              >
+                {smsBusy ? "Backfilling…" : "Backfill now"}
+              </button>
+            </>
+          )}
+          {smsResult && <p className="status-ok" style={{ margin: "8px 0 0 0" }}>{smsResult}</p>}
+          {smsError && <p className="status-error" style={{ margin: "8px 0 0 0" }}>{smsError}</p>}
+        </div>
+
+        {pickerOpen && (
+          <div style={{ marginTop: 12, borderTop: "1px solid var(--border, #333)", paddingTop: 12 }}>
+            <input
+              type="text"
+              placeholder="Filter contacts…"
+              value={contactFilter}
+              onChange={(e) => setContactFilter(e.target.value)}
+              style={{ width: "100%", marginBottom: 8 }}
+            />
+            <div style={{ maxHeight: 260, overflowY: "auto" }}>
+              {contacts.length === 0 && <p className="hint">Loading contacts…</p>}
+              {contacts
+                .filter((c) =>
+                  c.name.toLowerCase().includes(contactFilter.toLowerCase())
+                )
+                .slice(0, 300)
+                .map((c) => {
+                  const on = c.numbers.length > 0 && c.numbers.every((n) => smsAllow.has(n));
+                  return (
+                    <label key={c.name} className="toggle-row" style={{ padding: "4px 0" }}>
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => toggleContactNumbers(c.numbers)}
+                      />
+                      <span>
+                        {c.name}
+                        {c.numbers.length > 1 && (
+                          <span className="hint"> ({c.numbers.length} numbers)</span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })}
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <button onClick={handleSaveAllowlist} disabled={smsBusy}>
+                {smsBusy ? "Saving…" : "Save allowlist"}
+              </button>
+              <button onClick={() => setPickerOpen(false)} style={{ marginLeft: 8 }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <nav className="tabbar">

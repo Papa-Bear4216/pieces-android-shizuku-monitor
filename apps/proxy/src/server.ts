@@ -28,6 +28,46 @@ async function addToMem0(content: string) {
   }
 }
 
+// Optional (merged from shizuku-monitor): forward a coarse usage record for
+// each seeded batch to registry-app's /ingest, feeding its pattern engine.
+// Env-gated (REGISTRY_INGEST_URL unset => no-op) and always non-fatal.
+const REGISTRY_INGEST_URL = process.env.REGISTRY_INGEST_URL;
+const REGISTRY_AUTH_TOKEN = process.env.REGISTRY_AUTH_TOKEN;
+
+async function pipeToRegistryApp(batch: TelemetryEvent[], packageName: string, appLabel?: string) {
+  if (!REGISTRY_INGEST_URL) return;
+  try {
+    const timestamp = batch[0]?.timestamp || new Date().toISOString();
+    const idempotencyKey = `shizuku-${packageName}-${timestamp}-${batch.length}`;
+    let usageDurationMs = 0;
+    if (batch.length > 1 && batch[0]?.timestamp && batch[batch.length - 1]?.timestamp) {
+      const t0 = new Date(batch[0].timestamp).getTime();
+      const t1 = new Date(batch[batch.length - 1].timestamp).getTime();
+      if (!isNaN(t0) && !isNaN(t1)) usageDurationMs = Math.max(0, Math.abs(t1 - t0));
+    }
+    const payload = {
+      collector: process.env.REGISTRY_COLLECTOR_TYPE || "shizuku",
+      sourceId: process.env.SHIZUKU_DEVICE_ID || "shizuku-companion-device",
+      sourceLabel: "Shizuku Monitor",
+      rawLabel: appLabel || packageName,
+      rawIdentity: packageName,
+      idempotencyKey,
+      payload: { usageCount: batch.length, usageDurationMs, windowHours: 1 },
+    };
+    await fetch(REGISTRY_INGEST_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(REGISTRY_AUTH_TOKEN ? { Authorization: `Bearer ${REGISTRY_AUTH_TOKEN}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    });
+  } catch (err) {
+    console.warn("Failed to pipe telemetry to registry-app:", err);
+  }
+}
+
 // Observed in practice (2026-08-29): a pooled keep-alive socket to PiecesOS
 // occasionally dies without either side sending FIN/RST (UND_ERR_SOCKET
 // "other side closed" surfaced from a workstream-event seed call), and
@@ -281,6 +321,7 @@ const server = createServer(async (req, res) => {
         if (!novel) continue;
 
         await addToMem0(bodyText);
+        await pipeToRegistryApp(batch, packageName, batch[0]?.app_label);
 
         // Ambient workstream telemetry is routed strictly to WorkstreamEvents.
         // Asset creation (/assets/create) is skipped for Nano action streams to avoid store bloat.

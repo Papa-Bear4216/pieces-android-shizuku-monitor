@@ -1,5 +1,5 @@
 import { Preferences } from "@capacitor/preferences";
-import { getProxyBaseUrl, getProxyToken } from "./config";
+import { getConnectionTargets } from "./config";
 
 export class ProxyNotConfiguredError extends Error {
   constructor() {
@@ -45,11 +45,17 @@ const ASK_CLIENT_FETCH_TIMEOUT_MS = 100000;
 // slower network path rather than assume the default 10s always covers it.
 const SUMMARIES_CLIENT_FETCH_TIMEOUT_MS = 30000;
 
+// Plan A (LAN) -> Plan B (remote gateway) failover, merged from shizuku-monitor.
+// Tries each configured target in order. A target is abandoned and the next
+// one tried on: connection error / timeout, 401 or 403 (stale token for that
+// profile — the OTHER profile may still be valid), or any 5xx. A 503 from the
+// LAST target surfaces as HomeNodeUnreachableError; a non-auth 4xx (e.g. 404,
+// 400) is returned as-is since retrying a different host won't help.
 async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
-  const [baseUrl, token] = await Promise.all([getProxyBaseUrl(), getProxyToken()]);
-  if (!baseUrl || !token) throw new ProxyNotConfiguredError();
+  const targets = await getConnectionTargets();
+  if (targets.length === 0) throw new ProxyNotConfiguredError();
 
-  const timeoutMs = path.startsWith("/mobile/recent/assets")
+  const baseTimeout = path.startsWith("/mobile/recent/assets")
     ? ASSETS_CLIENT_FETCH_TIMEOUT_MS
     : path.startsWith("/mobile/ask")
       ? ASK_CLIENT_FETCH_TIMEOUT_MS
@@ -57,29 +63,54 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
         ? SUMMARIES_CLIENT_FETCH_TIMEOUT_MS
         : CLIENT_FETCH_TIMEOUT_MS;
 
-  let res: Response;
-  try {
-    res = await fetch(`${baseUrl}${path}`, {
-      ...init,
-      headers: {
-        ...init?.headers,
-        Authorization: `Bearer ${token}`,
-      },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (err) {
-    if (err instanceof Error && err.name === "TimeoutError") {
-      throw new HomeNodeUnreachableError("Request timed out reaching the proxy.");
+  let lastError: unknown = new HomeNodeUnreachableError();
+
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i];
+    const isLast = i === targets.length - 1;
+    // Probe the LAN target fast when a remote fallback exists, so being away
+    // from home doesn't cost the full timeout before failing over. Not on
+    // /mobile/ask — its long timeout is the whole point of that route.
+    const probe =
+      targets.length > 1 && i === 0 && target.mode === "lan" && !path.startsWith("/mobile/ask");
+    const timeoutMs = probe ? 2500 : baseTimeout;
+
+    let res: Response;
+    try {
+      res = await fetch(`${target.baseUrl}${path}`, {
+        ...init,
+        headers: { ...init?.headers, Authorization: `Bearer ${target.token}` },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      lastError =
+        err instanceof Error && err.name === "TimeoutError"
+          ? new HomeNodeUnreachableError("Request timed out reaching the proxy.")
+          : err;
+      continue; // network error / timeout -> try next target
     }
-    throw err;
+
+    if (res.status === 401 || res.status === 403) {
+      lastError = new Error(`Auth rejected by ${target.mode} target: HTTP ${res.status}`);
+      if (!isLast) continue;
+      return res; // last target: let the caller see the 401
+    }
+    if (res.status === 503) {
+      const body = await res.json().catch(() => null);
+      lastError = new HomeNodeUnreachableError(body?.reason ?? body?.error);
+      if (!isLast) continue;
+      throw lastError;
+    }
+    if (res.status >= 500) {
+      lastError = new Error(`${target.mode} target error: HTTP ${res.status}`);
+      if (!isLast) continue;
+      return res;
+    }
+
+    return res; // ok, or a non-auth 4xx that failover can't fix
   }
 
-  if (res.status === 503) {
-    const body = await res.json().catch(() => null);
-    throw new HomeNodeUnreachableError(body?.reason ?? body?.error);
-  }
-
-  return res;
+  throw lastError;
 }
 
 export type AskResult =

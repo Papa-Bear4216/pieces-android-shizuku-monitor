@@ -10,6 +10,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AccessibilityPlugin.class);
         registerPlugin(OnDeviceTriagePlugin.class);
         registerPlugin(TextEmbedderPlugin.class);
+        registerPlugin(NotificationPlugin.class);
+        registerPlugin(SmsPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

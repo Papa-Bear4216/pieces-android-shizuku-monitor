@@ -55,6 +55,19 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!-- Part 1: system-wide notification listener. Granted via
+             `cmd notification allow_listener` (Shizuku) or the settings screen;
+             inert until granted AND notification_capture_enabled is on. -->
+        <service
+            android:name=".NotificationCaptureService"
+            android:label="Pieces Notification Capture"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 
     <!-- Permissions -->
@@ -75,4 +88,12 @@
          standard practice for clarity even though the manifest entry alone
          grants nothing. -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
+
+    <!-- Part 2: full SMS/MMS bodies + history backfill. Declared so they are
+         grantable; the actual grants are `pm grant <pkg> <perm>` via Shizuku
+         (SmsPlugin.grantViaShizuku) — no standard runtime dialog for a
+         non-default-SMS app. Inert until granted. READ_CONTACTS is for the
+         contact-allowlist picker (only messages from ticked contacts are captured). -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
 </manifest>
